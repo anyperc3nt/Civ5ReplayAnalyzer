@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Civ5 Analyzer</title>
+    <!-- Подключаем Vue 3 и Chart.js -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <style>
+        body { margin: 0; overflow: hidden; background: #1a1a1a; font-family: 'Segoe UI', sans-serif; color: #eee; }
+        
+        /* Слой карты (на фоне) */
+        #mapCanvas { position: absolute; top: 0; left: 0; z-index: 0; }
+
+        /* UI Слой (поверх карты) */
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; pointer-events: none; }
+        
+        /* Разрешаем клики только по элементам управления */
+        .interactive { pointer-events: auto; }
+
+        /* Верхняя панель */
+        .top-bar {
+            position: absolute; top: 0; left: 0; right: 0;
+            background: rgba(30, 33, 40, 0.9);
+            padding: 10px 20px;
+            display: flex; justify-content: space-between; align-items: center;
+            border-bottom: 1px solid #444;
+        }
+
+        /* Боковая панель (Списки) */
+        .side-panel {
+            position: absolute; top: 60px; right: 0; bottom: 0;
+            width: 300px;
+            background: rgba(30, 33, 40, 0.85);
+            border-left: 1px solid #444;
+            display: flex; flex-direction: column;
+            overflow-y: auto;
+        }
+
+        /* Стиль ползунка */
+        input[type=range] { width: 300px; }
+        
+        /* Кнопки */
+        button {
+            background: #3a738c; border: none; color: white;
+            padding: 5px 15px; border-radius: 4px; cursor: pointer;
+        }
+        button:hover { background: #4a93b0; }
+
+        /* Таблицы в боковой панели */
+        .stat-row { display: flex; justify-content: space-between; padding: 5px 10px; border-bottom: 1px solid #333; font-size: 14px; }
+        .stat-row:hover { background: rgba(255,255,255,0.1); }
+    </style>
+</head>
+<body>
+
+<div id="app">
+    <!-- Карта -->
+    <canvas id="mapCanvas"></canvas>
+
+    <!-- UI -->
+    <div id="ui-layer" v-if="loaded">
+        
+        <!-- Верхняя панель: Таймлайн -->
+        <div class="top-bar interactive">
+            <div style="font-weight: bold; font-size: 18px;">Civ5 Replay</div>
+            
+            <div style="display: flex; align-items: center; gap: 15px;">
+                <button @click="changeTurn(-1)">◀</button>
+                <div style="text-align: center; min-width: 80px;">
+                    <div style="font-size: 12px; color: #aaa;">ХОД</div>
+                    <div style="font-size: 20px;">{{ currentTurn }}</div>
+                </div>
+                <button @click="changeTurn(1)">▶</button>
+                
+                <input type="range" min="0" :max="maxTurns" v-model.number="currentTurn" @input="onSliderChange">
+            </div>
+
+            <div style="font-size: 14px;">
+                {{ timestampToDate(currentTurnData?.timestamp) }}
+            </div>
+        </div>
+
+        <!-- Боковая панель: Статистика -->
+        <div class="side-panel interactive">
+            <div style="padding: 10px; background: #2a2a2a; font-weight: bold;">Игроки</div>
+            
+            <div v-for="player in currentPlayers" :key="player.id" class="stat-row">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <!-- Цветной кружок игрока -->
+                    <div :style="{width: '10px', height: '10px', borderRadius: '50%', background: getPlayerColor(player.id)}"></div>
+                    <span>Игрок {{ player.id }}</span>
+                </div>
+                <div style="text-align: right;">
+                    <div style="color: gold;">{{ player.gold }} 💰</div>
+                    <div style="color: cyan;">+{{ player.science }} 🧪</div>
+                </div>
+            </div>
+
+            <div style="padding: 10px; margin-top: 20px; background: #2a2a2a; font-weight: bold;">Города ({{ currentCities.length }})</div>
+            <div v-for="city in currentCities" class="stat-row" @click="focusCity(city)" style="cursor: pointer;">
+                <div>{{ city.name }}</div>
+                <div>Pop: {{ city.pop }}</div>
+            </div>
+        </div>
+    </div>
+    
+    <div v-else style="color: white; padding: 20px;">Загрузка данных...</div>
+</div>
+
+<!-- Данные -->
+<script src="data.js"></script>
+
+<!-- Логика -->
+<script>
+    const { createApp } = Vue;
+
+    createApp({
+        data() {
+            return {
+                loaded: false,
+                currentTurn: 0,
+                maxTurns: 0,
+                replayData: null,
+                // Цвета для игроков
+                playerColors: ["#f00", "#00f", "#0f0", "#ff0", "#0ff", "#f0f", "#fff", "#888"]
+            }
+        },
+        computed: {
+            currentTurnData() {
+                if (!this.replayData) return null;
+                return this.replayData.turns[this.currentTurn];
+            },
+            currentPlayers() {
+                return this.currentTurnData ? this.currentTurnData.players : [];
+            },
+            currentCities() {
+                return this.currentTurnData ? this.currentTurnData.cities : [];
+            }
+        },
+        mounted() {
+            if (window.REPLAY_DATA) {
+                this.replayData = window.REPLAY_DATA;
+                this.maxTurns = this.replayData.turns.length - 1;
+                this.loaded = true;
+                
+                // Инициализируем карту (функция из viewer.js, которую мы адаптируем)
+                this.$nextTick(() => {
+                    window.initMap(this.replayData); // Мы переделаем viewer.js под это
+                });
+            } else {
+                alert("Нет данных data.js");
+            }
+        },
+        methods: {
+            changeTurn(delta) {
+                let newTurn = this.currentTurn + delta;
+                if (newTurn >= 0 && newTurn <= this.maxTurns) {
+                    this.currentTurn = newTurn;
+                    this.updateMap();
+                }
+            },
+            onSliderChange() {
+                this.updateMap();
+            },
+            updateMap() {
+                // Вызываем функцию обновления карты
+                if (window.setMapTurn) window.setMapTurn(this.currentTurn);
+            },
+            timestampToDate(ts) {
+                if (!ts) return "";
+                return new Date(ts * 1000).toLocaleTimeString();
+            },
+            getPlayerColor(id) {
+                return this.playerColors[id % this.playerColors.length];
+            },
+            focusCity(city) {
+                // Переместить камеру к городу
+                if (window.moveCameraTo) window.moveCameraTo(city.x, city.y);
+            }
+        }
+    }).mount('#app');
+</script>
+
+<!-- Подключаем наш скрипт карты -->
+<script src="js/viewer.js"></script>
+
+</body>
+</html>

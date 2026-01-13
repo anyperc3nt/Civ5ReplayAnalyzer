@@ -1,5 +1,7 @@
 pycache/
 python/replays/
+replays/
 *.log
 lua/Adkjson.lua
 lua/dkjson.lua
+frontend/assets

@@ -8,7 +8,8 @@ from pathlib import Path
 LOG_PATH = Path(os.path.expanduser("~/Documents/My Games/Sid Meier's Civilization 5/Logs/Lua.log"))
 REPLAYS_DIR = Path("./replays")
 
-PATTERN = re.compile(r"CIV5_DATA_JSON::(\w+):([^:]+):([^:]+):(.*)")
+# Новая регулярка: ищем маркер и забираем всё, что после него
+PATTERN = re.compile(r"CIV5_DATA_JSON::(START|CHUNK|END):(.*)")
 
 class ReplayWatcher:
     def __init__(self):
@@ -30,9 +31,26 @@ class ReplayWatcher:
                 self.handle_header(data)
             elif d_type == "TURN":
                 self.handle_turn(data)
+            else:
+                print(f"[DEBUG] Получен неизвестный тип пакета: {d_type}")
         except json.JSONDecodeError as e:
-            # Если JSON битый (например, чанк потерялся), просто пропускаем
-            pass
+            # ТЕПЕРЬ МЫ ВИДИМ ОШИБКИ
+            print(f"[ERROR] Битый JSON в пакете: {e}")
+            # Можно вывести кусочек строки для диагностики:
+            print(f"Начало строки: {data_str[:100]}")
+
+    def handle_turn(self, data):
+        if not self.session_file:
+            return
+        
+        turn = data.get("turn")
+        if turn in self.recorded_turns:
+            return
+
+        self.recorded_turns.add(turn)
+        self.save_to_session(data)
+        # Меняем на обычный принт для надежности
+        print(f"[PROGRESS] Ход {turn} успешно записан в файл.")
 
     def handle_header(self, data):
         raw_sig = data.get("signature", "unknown")
@@ -56,19 +74,6 @@ class ReplayWatcher:
         print(f"[NEW GAME] ID: {self.current_game_id}")
         print(f"[FILE] {self.session_file.name}")
         print(f"{'='*50}")
-
-    def handle_turn(self, data):
-        if not self.session_file:
-            return
-        
-        turn = data.get("turn")
-        if turn in self.recorded_turns:
-            return
-
-        self.recorded_turns.add(turn)
-        self.save_to_session(data)
-        # Красивый вывод в одну строку
-        print(f"[PROGRESS] Записан ход: {turn}    ", end="\r")
 
     def save_to_session(self, data):
         with open(self.session_file, "a", encoding="utf-8") as f:
@@ -108,28 +113,41 @@ class ReplayWatcher:
             time.sleep(0.5)
 
     def parse_line(self, line):
-        # ОТЛАДКА: если видим маркер, сразу печатаем, что нашли
         if "CIV5_DATA_JSON::" in line:
-            # print(f"[DEBUG RAW LINE]: {line[:100]}...") # Раскомментируйте для жесткой отладки
-            
             match = PATTERN.search(line)
-            if match:
-                msg_type, uuid, index, payload = match.groups()
-                
-                if msg_type == "START":
-                    # print(f"\n[DEBUG] Поймали START пакета {uuid}")
+            if not match:
+                # Если видим маркер, но регулярка не пошла (маловероятно теперь)
+                print(f"[ERROR] Неверный формат маркера: {line[-50:]}")
+                return
+
+            msg_type = match.group(1)
+            payload = match.group(2)
+
+            if msg_type == "START":
+                # Формат: UUID:NUM_CHUNKS
+                parts = payload.split(":")
+                if len(parts) >= 2:
+                    uuid = parts[0]
                     self.buffers[uuid] = []
-                elif msg_type == "CHUNK":
+                    # print(f"\n[DEBUG] START: {uuid}")
+
+            elif msg_type == "CHUNK":
+                # Формат: UUID:INDEX:DATA...
+                # Используем maxsplit=2, так как в DATA тоже могут быть двоеточия
+                parts = payload.split(":", 2)
+                if len(parts) >= 3:
+                    uuid, index, data = parts
                     if uuid in self.buffers:
-                        self.buffers[uuid].append(payload)
-                elif msg_type == "END":
-                    if uuid in self.buffers:
-                        full_json = "".join(self.buffers[uuid])
-                        self.process_json(full_json)
-                        del self.buffers[uuid]
-            else:
-                # Если маркер есть, но регулярка не сработала — выводим ошибку
-                print(f"[ERROR] Линия с маркером не подошла под регулярку: {line[:100]}")
+                        self.buffers[uuid].append(data)
+
+            elif msg_type == "END":
+                # Формат: UUID
+                uuid = payload.strip()
+                if uuid in self.buffers:
+                    # print(f"[DEBUG] END: {uuid}")
+                    full_json = "".join(self.buffers[uuid])
+                    self.process_json(full_json)
+                    del self.buffers[uuid]
 
 if __name__ == "__main__":
     watcher = ReplayWatcher()

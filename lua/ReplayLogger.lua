@@ -467,60 +467,76 @@ end
 -- === ПАКЕТ TURN (4.3) ===
 
 function GetTurnSnapshot(iTurn)
-    local snapshot = {
-        type = "TURN",
-        turn = iTurn,
-        timestamp = os.time(),
-        players = {},
-        cities = {},
-        units = {},
-        mapChanges = {}
-    }
+  local snapshot = {
+      type = "TURN",
+      turn = iTurn,
+      timestamp = os.time(),
+      players = {},
+      cities = {},
+      units = {},
+      mapChanges = {}
+  }
 
-    -- 1. Сбор игроков
-    for i = 0, GameDefines.MAX_MAJOR_CIVS - 1 do
-        local p = Players[i]
-        if p:IsAlive() then
-            local pData = {
-                id = i,
-                gold = p:GetGold(),
-                science = p:GetScience(),
-                culture = p:GetJONSCulturePerTurn(),
-                happiness = p:GetExcessHappiness(),
-                tech = {
-                    current = p:GetCurrentResearchProgress(),
-                    researched = {} -- Можно добавить цикл по технам, если нужно
-                }
-            }
-            table.insert(snapshot.players, pData)
-            
-            -- 2. Сбор юнитов игрока
-            for unit in p:Units() do
-                table.insert(snapshot.units, {
-                    id = unit:GetID(),
-                    owner = i,
-                    type = unit:GetUnitType(),
-                    x = unit:GetX(),
-                    y = unit:GetY(),
-                    hp = unit:GetCurrHitPoints()
-                })
-            end
+  for i = 0, GameDefines.MAX_MAJOR_CIVS - 1 do
+      local p = Players[i]
+      -- Проверяем p:IsEverAlive(), так как IsAlive() может быть false, если игрока выбили, 
+      -- но мы хотим видеть его статистику на графиках
+      if p and p:IsEverAlive() then
+          
+          -- Безопасный сбор статов
+          local pData = {
+              id = i,
+              isAlive = p:IsAlive(),
+              gold = p:GetGold(),
+              -- В BNW используем GetScience (наука в ход) и GetTotalJONSCulturePerTurn
+              science = p:GetScience(), 
+              culture = p:GetTotalJONSCulturePerTurn(),
+              happiness = p:GetExcessHappiness(),
+              tech = {
+                  current = -1,
+                  progress = 0,
+                  needed = 0
+              }
+          }
 
-            -- 3. Сбор городов игрока
-            for city in p:Cities() do
-                table.insert(snapshot.cities, {
-                    id = city:GetID(),
-                    owner = i,
-                    name = city:GetName(),
-                    x = city:GetX(), y = city:GetY(),
-                    pop = city:GetPopulation(),
-                    hp = city:GetMaxHitPoints() - city:GetDamage()
-                })
-            end
-        end
-    end
+          -- Безопасно получаем текущую науку
+          local currentTech = p:GetCurrentResearch()
+          if currentTech ~= -1 then
+              pData.tech.current = currentTech
+              pData.tech.progress = p:GetResearchProgress(currentTech)
+              pData.tech.needed = p:GetResearchCost(currentTech)
+          end
 
-    return snapshot
+          table.insert(snapshot.players, pData)
+          
+          -- Собираем юнитов только если игрок жив
+          if p:IsAlive() then
+              for unit in p:Units() do
+                  table.insert(snapshot.units, {
+                      id = unit:GetID(),
+                      owner = i,
+                      type = unit:GetUnitType(),
+                      x = unit:GetX(),
+                      y = unit:GetY(),
+                      hp = unit:GetCurrHitPoints()
+                  })
+              end
+
+              for city in p:Cities() do
+                  table.insert(snapshot.cities, {
+                      id = city:GetID(),
+                      owner = i,
+                      name = city:GetName(),
+                      x = city:GetX(), y = city:GetY(),
+                      pop = city:GetPopulation(),
+                      hp = city:GetMaxHitPoints() - city:GetDamage()
+                  })
+              end
+          end
+      end
+  end
+
+  return snapshot
 end
 
 -- === ТОЧКИ ВХОДА ===
