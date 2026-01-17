@@ -7,3 +7,5 @@ lua/dkjson.lua
 frontend/assets
 Assets_png
 Assets
+frontend/data.js
+
