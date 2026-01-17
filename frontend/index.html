@@ -89,7 +89,56 @@
     <div v-else style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); color:white;">
         Загрузка данных...
     </div>
+
+        <!-- Окно города -->
+    <div v-if="selectedCity" class="side-panel interactive" style="left: 0; right: auto; border-right: 1px solid #444; border-left: none;">
+        <div style="padding: 10px; background: #222; display: flex; justify-content: space-between;">
+            <b>{{ selectedCity.name }}</b>
+            <button @click="closeCity">X</button>
+        </div>
+        
+        <div style="padding: 10px;">
+            <div class="stat-row">Население: <span style="color:white">{{ selectedCity.pop }}</span></div>
+            <div class="stat-row">Здоровье: <span style="color:lime">{{ selectedCity.hp }}</span></div>
+            
+            <hr style="border-color: #444">
+            
+            <!-- YIELDS (Доходы) -->
+            <div v-if="selectedCity.yields">
+                <div class="stat-row">🍎 Еда: <span>+{{ selectedCity.yields.food }}</span></div>
+                <div class="stat-row">⚙️ Произв: <span>+{{ selectedCity.yields.prod }}</span></div>
+                <div class="stat-row">💰 Золото: <span>+{{ selectedCity.yields.gold }}</span></div>
+                <div class="stat-row">🧪 Наука: <span>+{{ selectedCity.yields.sci }}</span></div>
+                <div class="stat-row">🎵 Культ: <span>+{{ selectedCity.yields.cult }}</span></div>
+                <div class="stat-row">🕊️ Вера: <span>+{{ selectedCity.yields.faith }}</span></div>
+            </div>
+
+            <hr style="border-color: #444">
+
+            <!-- ПРОИЗВОДСТВО -->
+            <div style="text-align: center; margin-bottom: 10px; color: #aaa;">Производство:</div>
+            <div style="text-align: center; font-size: 1.1em; color: orange;">
+                {{ selectedCity.prodItem || 'Ничего' }}
+            </div>
+            <div style="text-align: center; font-size: 0.9em;">
+                (Осталось ходов: {{ selectedCity.prodTurns }})
+            </div>
+
+            <hr style="border-color: #444">
+            
+            <!-- ЗДАНИЯ -->
+            <div style="margin-bottom: 5px; color: #aaa;">Здания:</div>
+            <div style="font-size: 0.85em; display: flex; flex-wrap: wrap; gap: 5px;">
+                <span v-for="bId in selectedCity.buildings" :key="bId" style="background: #333; padding: 2px 5px; border-radius: 3px;">
+                <!-- Тут нужно подтянуть название из словаря, пока просто ID или helper -->
+                {{ getBuildingName(bId) }}
+                </span>
+            </div>
+        </div>
+    </div>
+
 </div>
+
 
     
 <script src="data.js"></script>
@@ -106,15 +155,21 @@
                 currentTurn: 0,
                 maxTurns: 0,
                 replayData: null,
-                playerColors: [0xff0000, 0x0000ff, 0x00ff00, 0xffff00, 0x00ffff, 0xff00ff, 0xffffff, 0x888888] // HEX числа для Pixi
+                playerColors: [0xff0000, 0x0000ff, 0x00ff00, 0xffff00, 0x00ffff, 0xff00ff, 0xffffff, 0x888888], // HEX числа для Pixi
+                selectedCityId: null
             }
         },
         computed: {
             currentTurnData() { return this.replayData?.turns[this.currentTurn]; },
             currentPlayers() { return this.currentTurnData?.players || []; },
-            currentCities() { return this.currentTurnData?.cities || []; }
+            currentCities() { return this.currentTurnData?.cities || []; },
+            selectedCity() {
+                if (this.selectedCityId === null || !this.currentCities) return null;
+                return this.currentCities.find(c => c.id === this.selectedCityId);
+            },
         },
         mounted() {
+            window.appVue = this; // Чтобы Pixi мог вызывать методы Vue
             if (window.REPLAY_DATA) {
                 this.replayData = window.REPLAY_DATA;
                 this.maxTurns = this.replayData.turns.length - 1;
@@ -141,6 +196,17 @@
             },
             focusCity(city) {
                 window.moveCameraTo(city.x, city.y);
+            },
+            getBuildingName(id) {
+                if (!this.replayData || !this.replayData.header.dictionary.buildings) return id;
+                let rawName = this.replayData.header.dictionary.buildings[id];
+                return rawName.replace("BUILDING_", ""); // Убираем префикс для красоты
+            },
+            selectCity(city) {
+                this.selectedCityId = city.id;
+            },
+            closeCity() {
+                this.selectedCityId = null;
             }
         }
     }).mount('#app');

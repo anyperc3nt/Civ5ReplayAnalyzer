@@ -1,9 +1,13 @@
--- AReplayLogger.lua v1.0 (Core Engine)
--- Совместимость: Civ 5 Brave New World, Firestorm, EUI
--- Функционал: Signature, Dictionaries, Static Map, Chunking
+-- ============================================================================
+-- ReplayLogger.lua v2.0 (Enhanced Edition)
+-- Based on InfoAddict logic & Custom Replay Architecture
+-- ============================================================================
 
-local VERSION = "1.0"
- 
+ReplayLogger = {}
+ReplayLogger.VERSION = "2.0"
+ReplayLogger.lastProcessedTurn = -1
+ReplayLogger.isHeaderSent = false
+
 -- ============================================================================
 -- DKJSON LIBRARY (EMBEDDED)
 -- ============================================================================
@@ -351,19 +355,15 @@ local json = (function()
   return json
 end)()
 -- ============================================================================
--- END OF DKJSON
--- ============================================================================
 
-local lastProcessedTurn = -1
-local isHeaderSent = false
+-- === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
 
--- === СИСТЕМА ПЕРЕДАЧИ ДАННЫХ ===
-
-function PrintBigData(prefix, data)
-    local chunkSize = 4000
+function ReplayLogger.PrintBigData(prefix, data)
+    local chunkSize = 3900 -- Чуть меньше 4кб для безопасности
     local length = string.len(data)
     local numChunks = math.ceil(length / chunkSize)
-    local uuid = os.time() .. "-" .. Game.GetGameTurn()
+    -- Используем os.clock() для миллисекунд, чтобы избежать коллизий ID
+    local uuid = os.time() .. "-" .. math.floor(os.clock()*1000) .. "-" .. Game.GetGameTurn()
 
     print(prefix .. "START:" .. uuid .. ":" .. numChunks)
     for i = 1, numChunks do
@@ -374,99 +374,104 @@ function PrintBigData(prefix, data)
     print(prefix .. "END:" .. uuid)
 end
 
--- === АЛГОРИТМ ГЕНЕРАЦИИ SIGNATURE (4.1) ===
+-- === СБОР СЛОВАРЕЙ И МЕТА-ДАННЫХ ===
 
-function GetGameSignature()
-    local w, h = Map.GetGridSize()
-    local speed = GameInfo.GameSpeeds[PreGame.GetGameSpeed()].Type
-    local sig = "Map-" .. w .. "x" .. h .. "-Speed-" .. speed .. "-Sample-"
-    
-    local totalPlots = Map.GetNumPlots()
-    local step = math.floor(totalPlots / 50)
-    for i = 0, totalPlots - 1, step do
-        local plot = Map.GetPlotByIndex(i)
-        sig = sig .. plot:GetTerrainType() .. plot:GetFeatureType()
-    end
-    return sig
+function ReplayLogger.GetGameSignature()
+  local w, h = Map.GetGridSize()
+  local speed = GameInfo.GameSpeeds[PreGame.GetGameSpeed()].Type
+  -- Убрали Game.GetGameRandomSeed()
+  
+  local sig = "Map-" .. w .. "x" .. h .. "-Speed-" .. speed .. "-Sample-"
+  
+  -- Используем "Отпечаток карты" для уникальности
+  -- Берем каждый ~50-й тайл и записываем его тип.
+  -- Это гарантирует, что другая карта того же размера будет иметь другой хеш.
+  local totalPlots = Map.GetNumPlots()
+  local step = math.floor(totalPlots / 50)
+  if step < 1 then step = 1 end
+  
+  for i = 0, totalPlots - 1, step do
+      local plot = Map.GetPlotByIndex(i)
+      if plot then
+          -- Пишем тип местности и фичи (лес/джунгли)
+          sig = sig .. plot:GetTerrainType() .. plot:GetFeatureType()
+      end
+  end
+  
+  return sig
 end
 
--- === СБОР СЛОВАРЕЙ (4.2) ===
-
-function GetGameDictionaries()
+function ReplayLogger.GetGameDictionaries()
     local dict = {
-        civilizations = {},
-        units = {},
-        buildings = {},
-        technologies = {},
-        terrains = {},
-        features = {},
-        improvements = {},
-        resources = {}
+        civilizations = {}, units = {}, buildings = {}, 
+        technologies = {}, policies = {},
+        terrains = {}, features = {}, improvements = {}, resources = {}
     }
-
-    -- Вспомогательная функция для обхода таблиц GameInfo
+    
     local function FillDict(dest, tableName)
-        for row in GameInfo[tableName]() do
-            dest[tostring(row.ID)] = row.Type
-        end
+        for row in GameInfo[tableName]() do dest[tostring(row.ID)] = row.Type end
     end
 
     FillDict(dict.civilizations, "Civilizations")
     FillDict(dict.units, "Units")
     FillDict(dict.buildings, "Buildings")
     FillDict(dict.technologies, "Technologies")
+    FillDict(dict.policies, "Policies")
     FillDict(dict.terrains, "Terrains")
     FillDict(dict.features, "Features")
     FillDict(dict.improvements, "Improvements")
     FillDict(dict.resources, "Resources")
-
     return dict
 end
 
--- === СБОР СТАТИЧЕСКОЙ КАРТЫ (4.2) ===
-
-function GetStaticMap()
+function ReplayLogger.GetStaticMap()
     local w, h = Map.GetGridSize()
     local tiles = {}
     local numPlots = Map.GetNumPlots()
 
     for i = 0, numPlots - 1 do
         local plot = Map.GetPlotByIndex(i)
-        -- Компактный формат: Terrain, Feature, Resource, PlotType
+        -- Добавляем isHill/isMountain явно через PlotType
+        -- 0=Mountain, 1=Hills, 2=Flat, 3=Ocean
         tiles[i + 1] = {
             t = plot:GetTerrainType(),
             f = plot:GetFeatureType(),
             r = plot:GetResourceType(),
-            p = plot:GetPlotType()
+            p = plot:GetPlotType() 
         }
     end
-
     return { width = w, height = h, tiles = tiles }
 end
 
--- === ПАКЕТ HEADER ===
-
-function SendGameHeader()
-    print("ReplayLogger: Формирование HEADER пакета...")
+function ReplayLogger.SendGameHeader()
+    print("ReplayLogger: Формирование HEADER...")
     
     local header = {
         type = "HEADER",
-        version = VERSION,
-        signature = GetGameSignature(),
+        version = ReplayLogger.VERSION,
+        signature = ReplayLogger.GetGameSignature(),
         timestamp = os.time(),
-        dictionary = GetGameDictionaries(),
-        staticMap = GetStaticMap()
+        gameInfo = {
+            speed = GameInfo.GameSpeeds[PreGame.GetGameSpeed()].Type,
+            mapScript = PreGame.GetMapScript(),
+            difficulty = GameInfo.HandicapInfos[Game.GetHandicapType()].Type,
+            startTurn = Game.GetStartTurn()
+        },
+        dictionary = ReplayLogger.GetGameDictionaries(),
+        staticMap = ReplayLogger.GetStaticMap()
     }
 
     local jsonString = json.encode(header)
-    PrintBigData("CIV5_DATA_JSON::", jsonString)
-    isHeaderSent = true
-    print("ReplayLogger: HEADER отправлен.")
+    ReplayLogger.PrintBigData("CIV5_DATA_JSON::", jsonString)
+    ReplayLogger.isHeaderSent = true
+    
+    -- Очистка памяти после тяжелого хедера
+    collectgarbage("collect")
 end
 
--- === ПАКЕТ TURN (4.3) ===
+-- === СБОР ДАННЫХ ЗА ХОД (SNAPSHOT) ===
 
-function GetTurnSnapshot(iTurn)
+function ReplayLogger.GetTurnSnapshot(iTurn)
   local snapshot = {
       type = "TURN",
       turn = iTurn,
@@ -474,62 +479,150 @@ function GetTurnSnapshot(iTurn)
       players = {},
       cities = {},
       units = {},
-      mapChanges = {}
+      -- Новые слои карты
+      territory = {}, -- Массив ID владельцев клеток
+      mapObjects = {} -- Руины и лагеря варваров
   }
 
-  for i = 0, GameDefines.MAX_MAJOR_CIVS - 1 do
+  -- 1. СКАНИРОВАНИЕ КАРТЫ (Владения, Руины, Лагеря)
+  -- Проходим по всем тайлам. Это быстро.
+  local numPlots = Map.GetNumPlots()
+  
+  -- ID улучшений для поиска (кэшируем для скорости)
+  local impRuins = GameInfo.Improvements["IMPROVEMENT_GOODY_HUT"].ID
+  local impBarbCamp = GameInfo.Improvements["IMPROVEMENT_BARBARIAN_CAMP"].ID
+  
+  for i = 0, numPlots - 1 do
+      local plot = Map.GetPlotByIndex(i)
+      
+      -- А. Владелец тайла (для границ)
+      -- -1 если ничей, иначе ID игрока
+      snapshot.territory[i + 1] = plot:GetOwner()
+      
+      -- Б. Объекты (Руины, Лагеря)
+      local imp = plot:GetImprovementType()
+      if imp == impRuins then
+          table.insert(snapshot.mapObjects, { type = "RUIN", x = plot:GetX(), y = plot:GetY() })
+      elseif imp == impBarbCamp then
+          table.insert(snapshot.mapObjects, { type = "CAMP", x = plot:GetX(), y = plot:GetY() })
+      end
+  end
+
+  -- 2. СКАНИРОВАНИЕ ИГРОКОВ (Включая ГГ и Варваров)
+  -- MAX_CIV_PLAYERS включает мажоров, ГГ и варваров
+  for i = 0, GameDefines.MAX_CIV_PLAYERS - 1 do
       local p = Players[i]
-      -- Проверяем p:IsEverAlive(), так как IsAlive() может быть false, если игрока выбили, 
-      -- но мы хотим видеть его статистику на графиках
-      if p and p:IsEverAlive() then
+      
+      -- Проверка: Игрок существует, когда-либо жил.
+      -- Для Варваров (обычно ID 63) IsEverAlive может быть false до спавна, поэтому проверяем ID
+      if p and (p:IsEverAlive() or i == GameDefines.MAX_CIV_PLAYERS - 1) then
+          local pTeam = Teams[p:GetTeam()]
+          local isMinor = p:IsMinorCiv()
+          local isBarbarian = p:IsBarbarian()
           
-          -- Безопасный сбор статов
+          -- Безопасные вызовы
+          local cultPerTurn = (p.GetTotalJONSCulturePerTurn and p:GetTotalJONSCulturePerTurn()) or 0
+          local tourismVal = (p.GetTourism and p:GetTourism()) or 0
+
+          -- Базовая статистика
           local pData = {
               id = i,
               isAlive = p:IsAlive(),
+              isMinor = isMinor,      -- Флаг для фронтенда: это ГГ
+              isBarbarian = isBarbarian, -- Флаг для фронтенда: это варвары
+              
               gold = p:GetGold(),
-              -- В BNW используем GetScience (наука в ход) и GetTotalJONSCulturePerTurn
-              science = p:GetScience(), 
-              culture = p:GetTotalJONSCulturePerTurn(),
-              happiness = p:GetExcessHappiness(),
-              tech = {
-                  current = -1,
-                  progress = 0,
-                  needed = 0
-              }
+              score = p:GetScore(),
+              
+              -- Технологии и Политики собираем ТОЛЬКО для мажоров (ГГ не учат науку так же)
+              tech = nil,
+              policies = nil
           }
+          
+          -- Расширенная статистика только для Полноценных Цивилизаций (не Варвары, не ГГ)
+          -- Хотя ГГ имеют золото и юнитов, им не нужна наука в реплее
+          if not isMinor and not isBarbarian then
+              pData.goldPerTurn = p:CalculateGoldRate()
+              pData.science = p:GetScience()
+              pData.culture = cultPerTurn
+              pData.totalCulture = p:GetJONSCulture()
+              pData.happiness = p:GetExcessHappiness()
+              pData.military = p:GetMilitaryMight()
+              pData.numCities = p:GetNumCities()
+              pData.faith = p:GetFaith()
+              pData.tourism = tourismVal
+              
+              -- ТЕХНОЛОГИИ (Дерево)
+              pData.tech = { current = -1, progress = 0, needed = 0, researched = {} }
+              
+              local currentTech = p:GetCurrentResearch()
+              if currentTech ~= -1 then
+                  pData.tech.current = currentTech
+                  pData.tech.progress = p:GetResearchProgress(currentTech)
+                  pData.tech.needed = p:GetResearchCost(currentTech)
+              end
+              
+              for tech in GameInfo.Technologies() do
+                  if pTeam:IsHasTech(tech.ID) then
+                      table.insert(pData.tech.researched, tech.ID)
+                  end
+              end
 
-          -- Безопасно получаем текущую науку
-          local currentTech = p:GetCurrentResearch()
-          if currentTech ~= -1 then
-              pData.tech.current = currentTech
-              pData.tech.progress = p:GetResearchProgress(currentTech)
-              pData.tech.needed = p:GetResearchCost(currentTech)
+              -- ПОЛИТИКИ
+              pData.policies = {}
+              for policy in GameInfo.Policies() do
+                  if p:HasPolicy(policy.ID) then
+                      table.insert(pData.policies, policy.ID)
+                  end
+              end
           end
 
           table.insert(snapshot.players, pData)
           
-          -- Собираем юнитов только если игрок жив
+          -- ЮНИТЫ И ГОРОДА (Если жив)
           if p:IsAlive() then
+              -- Юниты
               for unit in p:Units() do
                   table.insert(snapshot.units, {
                       id = unit:GetID(),
                       owner = i,
                       type = unit:GetUnitType(),
-                      x = unit:GetX(),
-                      y = unit:GetY(),
-                      hp = unit:GetCurrHitPoints()
+                      x = unit:GetX(), y = unit:GetY(),
+                      hp = unit:GetCurrHitPoints(),
+                      moves = unit:GetMoves()
                   })
               end
 
+              -- Города
               for city in p:Cities() do
+                  local buildings = {}
+                  for b in GameInfo.Buildings() do
+                      if city:IsHasBuilding(b.ID) then
+                          table.insert(buildings, b.ID)
+                      end
+                  end
+                  
+                  -- ДЕТАЛЬНЫЕ ДОХОДЫ ГОРОДА (YIELDS)
+                  local yields = {
+                      food = city:GetYieldRate(YieldTypes.YIELD_FOOD),
+                      prod = city:GetYieldRate(YieldTypes.YIELD_PRODUCTION),
+                      gold = city:GetYieldRate(YieldTypes.YIELD_GOLD),
+                      sci = city:GetYieldRate(YieldTypes.YIELD_SCIENCE),
+                      cult = (city.GetJONSCulturePerTurn and city:GetJONSCulturePerTurn()) or 0,
+                      faith = (city.GetFaithPerTurn and city:GetFaithPerTurn()) or 0
+                  }
+
                   table.insert(snapshot.cities, {
                       id = city:GetID(),
                       owner = i,
                       name = city:GetName(),
                       x = city:GetX(), y = city:GetY(),
                       pop = city:GetPopulation(),
-                      hp = city:GetMaxHitPoints() - city:GetDamage()
+                      hp = city:GetMaxHitPoints() - city:GetDamage(),
+                      buildings = buildings,
+                      yields = yields, -- <--- Новое поле
+                      prodItem = city:GetProductionNameKey(), 
+                      prodTurns = city:GetProductionTurnsLeft()
                   })
               end
           end
@@ -539,28 +632,45 @@ function GetTurnSnapshot(iTurn)
   return snapshot
 end
 
--- === ТОЧКИ ВХОДА ===
+-- === EVENT HANDLERS ===
 
-function OnTurnStart()
-    -- Если это самый первый запуск в сессии — шлем Header
-    if not isHeaderSent then
-        SendGameHeader()
-    end
+function ReplayLogger.OnTurnStart()
+    -- Инициализация при первом вызове
+    if not ReplayLogger.isHeaderSent then ReplayLogger.SendGameHeader() end
 
     local iTurn = Game.GetGameTurn()
-    if iTurn == lastProcessedTurn then return end
-    lastProcessedTurn = iTurn
+    if iTurn == ReplayLogger.lastProcessedTurn then return end
+    ReplayLogger.lastProcessedTurn = iTurn
 
     print("ReplayLogger: Сбор данных за ход " .. iTurn)
-    local turnData = GetTurnSnapshot(iTurn)
-    PrintBigData("CIV5_DATA_JSON::", json.encode(turnData))
+    local turnData = ReplayLogger.GetTurnSnapshot(iTurn)
+    
+    ReplayLogger.PrintBigData("CIV5_DATA_JSON::", json.encode(turnData))
+    
+    -- Управление памятью (InfoAddict делает это раз в 10 ходов, мы делаем каждый, т.к. json тяжелый)
+    collectgarbage("collect")
 end
 
--- Событие при загрузке UI
-function OnUIShow()
-    if not isHeaderSent then SendGameHeader() end
+function ReplayLogger.OnVictory(iWinner, iVictoryType)
+    print("ReplayLogger: VICTORY DETECTED!")
+    local victoryData = {
+        type = "WINNER",
+        turn = Game.GetGameTurn(),
+        winner = iWinner,
+        victoryType = GameInfo.Victories[iVictoryType].Type
+    }
+    ReplayLogger.PrintBigData("CIV5_DATA_JSON::", json.encode(victoryData))
 end
 
-Events.ActivePlayerTurnStart.Add(OnTurnStart)
--- Дополнительно пробуем отправиться при инициализации
-Events.SequenceGameInitComplete.Add(OnUIShow)
+function ReplayLogger.OnUIShow()
+    if not ReplayLogger.isHeaderSent then ReplayLogger.SendGameHeader() end
+end
+
+-- === REGISTRATION ===
+
+Events.ActivePlayerTurnStart.Add(ReplayLogger.OnTurnStart)
+-- Events.GameVictory.Add(ReplayLogger.OnVictory)
+-- Инициализация при загрузке (если мод загружен после старта)
+Events.SequenceGameInitComplete.Add(ReplayLogger.OnUIShow)
+
+print("ReplayLogger: Script Loaded Successfully.")
