@@ -63,6 +63,14 @@
                 <button @click="changeTurn(1)">⏭</button>
                 <input type="range" min="0" :max="maxTurns" v-model.number="currentTurn" @input="updateMap">
             </div>
+
+            <div style="margin-left: 20px; display: flex; gap: 5px;">
+                <button @click="iconMode = 'default'" :style="{background: iconMode==='default'?'#66a':''}">All</button>
+                <button @click="iconMode = 'military'" :style="{background: iconMode==='military'?'#66a':''}">⚔️</button>
+                <button @click="iconMode = 'civilian'" :style="{background: iconMode==='civilian'?'#66a':''}">👷</button>
+                <button @click="iconMode = 'resource'" :style="{background: iconMode==='resource'?'#66a':''}">💎</button>
+                <button @click="iconMode = 'misc'" :style="{background: iconMode==='misc'?'#66a':''}">🗿</button>
+            </div>
         </div>
 
         <div class="side-panel interactive">
@@ -155,26 +163,36 @@
                 currentTurn: 0,
                 maxTurns: 0,
                 replayData: null,
-                playerColors: [0xff0000, 0x0000ff, 0x00ff00, 0xffff00, 0x00ffff, 0xff00ff, 0xffffff, 0x888888], // HEX числа для Pixi
-                selectedCityId: null
+                selectedCityId: null, // Храним ID, а не объект!
+                
+                // Режимы иконок: 'default', 'military', 'resource', 'civilian', 'misc'
+                iconMode: 'default',
+                
+                playerColors: [0xda2020, 0x3366cc, 0xffcc00, 0x00aa00, 0xcc6600, 0x990099, 0x009999, 0xffffff]
             }
         },
         computed: {
             currentTurnData() { return this.replayData?.turns[this.currentTurn]; },
             currentPlayers() { return this.currentTurnData?.players || []; },
-            currentCities() { return this.currentTurnData?.cities || []; },
+            
+            // Динамически ищем город в текущем ходу по ID
             selectedCity() {
-                if (this.selectedCityId === null || !this.currentCities) return null;
-                return this.currentCities.find(c => c.id === this.selectedCityId);
-            },
+                if (this.selectedCityId === null || !this.currentTurnData) return null;
+                return this.currentTurnData.cities.find(c => c.id === this.selectedCityId);
+            }
+        },
+        watch: {
+            // При смене режима перерисовываем карту
+            iconMode() {
+                window.setIconMode(this.iconMode); // Метод в viewer.js
+                this.updateMap();
+            }
         },
         mounted() {
-            window.appVue = this; // Чтобы Pixi мог вызывать методы Vue
+            window.appVue = this;
             if (window.REPLAY_DATA) {
                 this.replayData = window.REPLAY_DATA;
                 this.maxTurns = this.replayData.turns.length - 1;
-                
-                // Инициализация Pixi
                 window.initPixiApp(this.replayData);
                 this.loaded = true;
             }
@@ -191,22 +209,20 @@
                 window.updatePixiTurn(this.currentTurn);
             },
             getPlayerColor(id) {
-                // Конвертация 0xFF0000 -> #FF0000 для CSS
-                return '#' + this.playerColors[id % this.playerColors.length].toString(16).padStart(6, '0');
+                if (id >= this.playerColors.length) return '#888888';
+                return '#' + this.playerColors[id].toString(16).padStart(6, '0');
             },
-            focusCity(city) {
-                window.moveCameraTo(city.x, city.y);
-            },
-            getBuildingName(id) {
-                if (!this.replayData || !this.replayData.header.dictionary.buildings) return id;
-                let rawName = this.replayData.header.dictionary.buildings[id];
-                return rawName.replace("BUILDING_", ""); // Убираем префикс для красоты
-            },
-            selectCity(city) {
-                this.selectedCityId = city.id;
+            // Вызывается из Pixi при клике
+            selectCity(cityId) {
+                this.selectedCityId = cityId;
             },
             closeCity() {
                 this.selectedCityId = null;
+            },
+            getBuildingName(id) {
+                if (!this.replayData.header.dictionary.buildings) return id;
+                let name = this.replayData.header.dictionary.buildings[id] || "Unknown";
+                return name.replace("BUILDING_", "").replace(/_/g, " ");
             }
         }
     }).mount('#app');

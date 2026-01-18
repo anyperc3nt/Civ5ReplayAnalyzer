@@ -1,23 +1,49 @@
-// Глобальные переменные
-let app;
-let mapContainer; 
+// ============================================================================
+// viewer.js - Civilization 5 Web Replay Viewer
+// ============================================================================
 
-// === НОВЫЕ СЛОИ ===
-let baseTerrainLayer, gridLayer, featuresLayer, citiesLayer, unitsLayer; 
+// --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ---
+let app, mapContainer;
+let currentIconMode = 'default'; // 'default', 'military', 'civilian', 'resource', 'misc'
+
+// Слои (Z-index определяется порядком добавления)
+let baseTerrainLayer, territoryLayer, gridLayer, featuresLayer, hillsLayer; 
+let citiesLayer;
+let iconLayerRes, iconLayerMisc, iconLayerCiv, iconLayerMilitary; // Слои иконок
 
 let staticMapData = null;
 let turnsData = null;
 let globalReplayData = null; 
 const textureCache = {};
 
-const HEX_RADIUS = 20;
+// Константы размеров
+const HEX_RADIUS = 32; // Увеличили для детализации
 const HEX_WIDTH = HEX_RADIUS * Math.sqrt(3);
 const HEX_HEIGHT = HEX_RADIUS * 2;
 
-const TERRAIN_COLORS = {
-    0: 0x497f37, 1: 0x888b39, 2: 0xe4d99e, 3: 0x858e8b, 
-    4: 0xffffff, 5: 0x3a738c, 6: 0x1a4159,
-};
+// Список мирных юнитов (все остальные считаются военными)
+const CIVILIAN_UNITS = [
+    "UNIT_SETTLER", "UNIT_WORKER", "UNIT_MISSIONARY", "UNIT_INQUISITOR", 
+    "UNIT_PROPHET", "UNIT_GREAT_GENERAL", "UNIT_GREAT_ADMIRAL", 
+    "UNIT_GREAT_ARTIST", "UNIT_GREAT_WRITER", "UNIT_GREAT_MUSICIAN", 
+    "UNIT_GREAT_SCIENTIST", "UNIT_GREAT_MERCHANT", "UNIT_GREAT_ENGINEER",
+    "UNIT_CARAVAN", "UNIT_CARGO_SHIP"
+];
+
+// === ФИЛЬТР ДЛЯ ЮНИТОВ ===
+// Превращает красно-зеленые иконки в черно-белые.
+// Логика: R=G, G=G, B=G. 
+// Если пиксель Зеленый (0,1,0), он станет Белым (1,1,1).
+// Если пиксель Красный (1,0,0), в нем G=0, значит он станет Черным (0,0,0).
+const unitColorFilter = new PIXI.ColorMatrixFilter();
+unitColorFilter.matrix = [
+    0, 1, 0, 0, 0, // Red   = 0*R + 1*G + 0*B
+    0, 1, 0, 0, 0, // Green = 0*R + 1*G + 0*B
+    0, 1, 0, 0, 0, // Blue  = 0*R + 1*G + 0*B
+    0, 0, 0, 1, 0  // Alpha = Alpha (без изменений)
+];
+
+// --- ИНИЦИАЛИЗАЦИЯ ---
 
 window.initPixiApp = function(data) {
     globalReplayData = data;
@@ -25,482 +51,515 @@ window.initPixiApp = function(data) {
     turnsData = data.turns;
 
     const container = document.getElementById('pixi-container');
+    
+    // Удаляем старый канвас если был (для HMR)
+    if (container.firstChild) container.removeChild(container.firstChild);
+
     app = new PIXI.Application({
         width: container.clientWidth,
         height: container.clientHeight,
         backgroundColor: 0x111111,
         antialias: true,
-        resolution: window.devicePixelRatio || 1,
+        resolution: window.devicePixelRatio || 1, // High DPI support
+        autoDensity: true
     });
     container.appendChild(app.view);
 
     mapContainer = new PIXI.Container();
+    app.stage.addChild(mapContainer);
+
+    // === СОЗДАЕМ СЛОИ (ПОРЯДОК ВАЖЕН!) ===
+    baseTerrainLayer = new PIXI.Container();    // 1. Земля
+    territoryLayer = new PIXI.Container();      // 2. Границы (Линии)
+    gridLayer = new PIXI.Container();           // 3. Сетка
+    featuresLayer = new PIXI.Container();       // 4. Леса/Джунгли
+    hillsLayer = new PIXI.Container();          // 4. Холмы и Горы (Поверх лесов)
+    citiesLayer = new PIXI.Container();         // 5. Города (подложка)
+    
+    // 6. Иконки (поверх городов)
+    iconLayerRes = new PIXI.Container();
+    iconLayerMisc = new PIXI.Container();
+    iconLayerCiv = new PIXI.Container();
+    iconLayerMilitary = new PIXI.Container();
+
+    // Добавляем в контейнер
+    mapContainer.addChild(baseTerrainLayer);
+    mapContainer.addChild(territoryLayer);
+    mapContainer.addChild(gridLayer);
+    mapContainer.addChild(featuresLayer);
+    mapContainer.addChild(hillsLayer);
+    mapContainer.addChild(citiesLayer);
+    
+    mapContainer.addChild(iconLayerRes);
+    mapContainer.addChild(iconLayerMisc);
+    mapContainer.addChild(iconLayerCiv);
+    mapContainer.addChild(iconLayerMilitary);
+
+    // Центрируем камеру
     const centerX = (staticMapData.width * HEX_WIDTH) / 2;
     const centerY = (staticMapData.height * HEX_RADIUS * 1.5) / 2;
     mapContainer.x = (app.screen.width / 2) - centerX;
     mapContainer.y = (app.screen.height / 2) - centerY;
-    app.stage.addChild(mapContainer);
 
-    // === СОЗДАЕМ И ДОБАВЛЯЕМ СЛОИ В СТРОГОМ ПОРЯДКЕ ===
-    baseTerrainLayer = new PIXI.Container();
-    gridLayer = new PIXI.Container();
-    territoryLayer = new PIXI.Container();
-    featuresLayer = new PIXI.Container();
-    resourcesLayer = new PIXI.Container();
-    mapObjectsLayer = new PIXI.Container(); 
-    citiesLayer = new PIXI.Container();
-    unitsLayer = new PIXI.Container();
-    
-    // Кто добавлен позже — тот выше (Z-index)
-    mapContainer.addChild(baseTerrainLayer); // Самый низ
-    mapContainer.addChild(gridLayer);        // Сетка поверх земли
-    mapContainer.addChild(territoryLayer); // Границы поверх земли
-    mapContainer.addChild(featuresLayer);    // Леса поверх сетки
-    mapContainer.addChild(resourcesLayer); // ресурсы
-    mapContainer.addChild(mapObjectsLayer); // Руины поверх ресурсов
-    mapContainer.addChild(citiesLayer);      // Города
-    mapContainer.addChild(unitsLayer);       // Юниты (Самый верх)
-
-    drawStaticTerrain();
     setupInteraction();
+    drawStaticTerrain();
     window.updatePixiTurn(0);
 };
 
-function getSpriteFromAsset(assetName, width, height) {
-    if (!window.ASSET_MAP || !assetName) return null;
-    const path = window.ASSET_MAP[assetName];
-    if (!path) return null;
+// Функция переключения режима из Vue
+window.setIconMode = function(mode) {
+    currentIconMode = mode;
+    // Pixi не перерисовывается сам, но Vue вызовет updateMap -> updatePixiTurn
+};
 
-    let tex = textureCache[path];
-    if (!tex) { 
-        tex = PIXI.Texture.from(path); 
-        textureCache[path] = tex; 
+// --- РАБОТА С ТЕКСТУРАМИ ---
+
+// Генератор шахматки (Missing Texture)
+function getMissingTexture() {
+    if (textureCache['__MISSING__']) return textureCache['__MISSING__'];
+    
+    const canvas = document.createElement('canvas');
+    canvas.width = 64; canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    // Фиолетовый и Черный
+    ctx.fillStyle = '#ff00ff'; ctx.fillRect(0,0,32,32); ctx.fillRect(32,32,32,32);
+    ctx.fillStyle = '#000000'; ctx.fillRect(32,0,32,32); ctx.fillRect(0,32,32,32);
+    
+    const tex = PIXI.Texture.from(canvas);
+    textureCache['__MISSING__'] = tex;
+    return tex;
+}
+
+function getSpriteFromAsset(assetName, w, h) {
+    // 1. Если имени нет - сразу возвращаем null (пустоту)
+    if (!assetName) return null;
+
+    let tex = null;
+    
+    // 2. Пытаемся найти в маппинге
+    if (window.ASSET_MAP && window.ASSET_MAP[assetName]) {
+        const path = window.ASSET_MAP[assetName];
+        tex = textureCache[path];
+        if (!tex) {
+            tex = PIXI.Texture.from(path);
+            textureCache[path] = tex;
+        }
     }
+
+    // 3. Если текстура не найдена — берем Missing Texture
+    if (!tex) {
+        tex = getMissingTexture();
+    }
+
     const sprite = new PIXI.Sprite(tex);
     sprite.anchor.set(0.5);
-    sprite.width = width;
-    sprite.height = height;
+    sprite.width = w;
+    sprite.height = h;
     return sprite;
 }
 
-// === ОТРИСОВКА ===
-
-function getHexPosition(q, r) {
-    // Инвертируем Y для Pixi
-    // (0,0) в Civ5 - это Bottom-Left.
-    // В Pixi (0,0) - Top-Left.
-    const invertedR = staticMapData.height - 1 - r;
-    
-    // Смещение Odd-R (или Odd-Q? Civ5 вроде Odd-R "Pointy Top")
-    // x = size * sqrt(3) * (q + 0.5 * (r&1))
-    // y = size * 3/2 * r
-    const x = HEX_WIDTH * (q + 0.5 * (r % 2));
-    const y = invertedR * (HEX_RADIUS * 1.5);
-    
-    // Центрируем карту относительно (0,0) контейнера
-    const mapPixelWidth = staticMapData.width * HEX_WIDTH;
-    const mapPixelHeight = staticMapData.height * HEX_RADIUS * 1.5;
-    
-    return {
-        x: x - mapPixelWidth / 2,
-        y: y - mapPixelHeight / 2
-    };
-}
+// --- ОТРИСОВКА СТАТИКИ (ЛАНДШАФТ) ---
 
 function drawStaticTerrain() {
     baseTerrainLayer.removeChildren();
     gridLayer.removeChildren();
     featuresLayer.removeChildren();
-    resourcesLayer.removeChildren(); 
+    hillsLayer.removeChildren(); // Очищаем новый слой
 
-    const gridGraphics = new PIXI.Graphics();
-    gridGraphics.lineStyle(1, 0x000000, 0.4);
+    const gridG = new PIXI.Graphics();
+    gridG.lineStyle(1, 0x000000, 0.3);
 
     staticMapData.tiles.forEach((tile, index) => {
-        let q = tile.x;
-        let r = tile.y;
-        if (q === undefined) {
-            q = index % staticMapData.width;
-            r = Math.floor(index / staticMapData.width);
-        }
+        let q = tile.x !== undefined ? tile.x : index % staticMapData.width;
+        let r = tile.y !== undefined ? tile.y : Math.floor(index / staticMapData.width);
         const pos = getHexPosition(q, r);
 
-        // PlotType: 0=Mountain, 1=Hills, 2=Flat
-        let isMountain = tile.p === 0;
-        let isHill = tile.p === 1;
-
-        // --- 1. РИСУЕМ БАЗОВЫЙ ЛАНДШАФТ (ВСЕГДА) ---
-        // Даже если это гора, она стоит на чем-то (Снег, Пустыня, Луга)
-        let terrainName = globalReplayData.header.dictionary.terrains[tile.t];
+        // 1. TERRAIN (Ландшафт - Подложка)
+        // Рисуем ВСЕГДА, даже если это гора. Гора просто встанет сверху.
+        let tName = globalReplayData.header.dictionary.terrains[tile.t];
         
-        // Убрали блок "if (isMountain) terrainName = ...", чтобы сохранить подложку
-        
-        const tSprite = getSpriteFromAsset(terrainName, HEX_WIDTH * 1.05, HEX_HEIGHT * 1.05);
-
+        const tSprite = getSpriteFromAsset(tName, HEX_WIDTH*1.05, HEX_HEIGHT*1.05);
         if (tSprite) {
             tSprite.x = pos.x; tSprite.y = pos.y;
             
-            // Маска
             const mask = new PIXI.Graphics();
             mask.beginFill(0xffffff);
-            const maskPath = [];
-            for (let i = 0; i < 6; i++) {
-                const angle = (Math.PI / 180) * (60 * i + 30);
-                maskPath.push(HEX_RADIUS * Math.cos(angle)); 
-                maskPath.push(HEX_RADIUS * Math.sin(angle));
-            }
-            mask.drawPolygon(maskPath);
+            drawHexPoly(mask, 0, 0, HEX_RADIUS);
             mask.endFill();
             mask.x = pos.x; mask.y = pos.y;
             
             tSprite.mask = mask;
             baseTerrainLayer.addChild(mask);
             baseTerrainLayer.addChild(tSprite);
-        } else {
-            // Фолбэк цвет (базовый)
-            const g = new PIXI.Graphics();
-            const color = TERRAIN_COLORS[tile.t] || 0x333333; 
-            // Убрали "if (isMountain) color = 0x555555", чтобы не было серой заливки
-            
-            g.beginFill(color);
-            const gPath = [];
-            for (let i = 0; i < 6; i++) {
-                const angle = (Math.PI / 180) * (60 * i + 30);
-                gPath.push(HEX_RADIUS * Math.cos(angle)); 
-                gPath.push(HEX_RADIUS * Math.sin(angle));
-            }
-            g.drawPolygon(gPath);
-            g.endFill();
-            g.x = pos.x; g.y = pos.y;
-            baseTerrainLayer.addChild(g);
         }
 
-        // --- 2. НАКЛАДКА ХОЛМОВ ---
-        if (isHill) {
-            const hillSprite = getSpriteFromAsset("TERRAIN_HILL", HEX_WIDTH, HEX_HEIGHT);
-            if (hillSprite) {
-                hillSprite.x = pos.x; hillSprite.y = pos.y;
-                baseTerrainLayer.addChild(hillSprite); 
-            }
-        }
-
-        // --- 3. НАКЛАДКА ГОР (ТЕПЕРЬ ТАК ЖЕ, КАК ХОЛМЫ) ---
-        if (isMountain) {
-            // Используем имя из asset_map (TERRAIN_MOUNTAIN)
-            const mtSprite = getSpriteFromAsset("TERRAIN_MOUNTAIN", HEX_WIDTH * 1.05, HEX_HEIGHT * 1.05);
-            if (mtSprite) {
-                mtSprite.x = pos.x; mtSprite.y = pos.y;
-                baseTerrainLayer.addChild(mtSprite);
-            } else {
-                // Если картинки горы нет - нарисуем треугольник, чтобы не путать с равниной
-                const g = new PIXI.Graphics();
-                g.beginFill(0x444444); // Темно-серый пик
-                g.moveTo(0, -HEX_RADIUS * 0.8);
-                g.lineTo(HEX_RADIUS * 0.5, HEX_RADIUS * 0.5);
-                g.lineTo(-HEX_RADIUS * 0.5, HEX_RADIUS * 0.5);
-                g.endFill();
-                g.x = pos.x; g.y = pos.y;
-                baseTerrainLayer.addChild(g);
-            }
-        }
-
-        // --- 2. ФИЧИ (ЛЕСА, ДЖУНГЛИ) ---
-        // tile.f: -1 если нет фичи
-        if (tile.f >= 0) { 
-            const featureName = globalReplayData.header.dictionary.features[tile.f];
-            const fSprite = getSpriteFromAsset(featureName, HEX_WIDTH * 0.9, HEX_HEIGHT * 0.9);
+        // 2. FEATURES (Лес/Джунгли) - Рисуем ПЕРЕД холмами
+        if (tile.f >= 0) {
+            const fName = globalReplayData.header.dictionary.features[tile.f];
+            const fSprite = getSpriteFromAsset(fName, HEX_WIDTH, HEX_HEIGHT);
             if (fSprite) {
                 fSprite.x = pos.x; fSprite.y = pos.y;
                 featuresLayer.addChild(fSprite);
             }
         }
 
-        // --- 3. РЕСУРСЫ ---
-        // tile.r: -1 если нет ресурса
-        if (tile.r >= 0) {
-            const resName = globalReplayData.header.dictionary.resources[tile.r];
-            // Ресурсы обычно маленькие иконки (кружочки)
-            const rSprite = getSpriteFromAsset(resName, HEX_WIDTH * 0.6, HEX_WIDTH * 0.6);
-            if (rSprite) {
-                rSprite.x = pos.x; rSprite.y = pos.y;
-                resourcesLayer.addChild(rSprite);
+        // 3. HILLS & MOUNTAINS (Холмы и Горы) - Рисуем в hillsLayer (ПОВЕРХ всего)
+        
+        // Гора (PlotType = 0)
+        if (tile.p === 0) {
+            const mSprite = getSpriteFromAsset("TERRAIN_MOUNTAIN", HEX_WIDTH*1.05, HEX_HEIGHT*1.05);
+            if (mSprite) {
+                mSprite.x = pos.x; mSprite.y = pos.y;
+                hillsLayer.addChild(mSprite);
+            }
+        }
+        // Холм (PlotType = 1)
+        else if (tile.p === 1) {
+            const hSprite = getSpriteFromAsset("TERRAIN_HILL", HEX_WIDTH, HEX_HEIGHT);
+            if (hSprite) {
+                hSprite.x = pos.x; hSprite.y = pos.y;
+                hillsLayer.addChild(hSprite);
             }
         }
 
-        // --- 4. СЕТКА ---
+        // 4. GRID
         const path = [];
         for (let i = 0; i < 6; i++) {
             const angle = (Math.PI / 180) * (60 * i + 30);
             path.push(pos.x + HEX_RADIUS * Math.cos(angle)); 
             path.push(pos.y + HEX_RADIUS * Math.sin(angle));
         }
-        gridGraphics.drawPolygon(path);
+        gridG.drawPolygon(path);
     });
-
-    gridLayer.addChild(gridGraphics);
+    gridLayer.addChild(gridG);
 }
 
+
+// --- ГЛАВНЫЙ ЦИКЛ ОБНОВЛЕНИЯ (ДИНАМИКА) ---
+
 window.updatePixiTurn = function(turnIndex) {
-    // Очищаем динамические слои
-    unitsLayer.removeChildren();
-    territoryLayer.removeChildren(); // Чистим границы
-    mapObjectsLayer.removeChildren(); // Чистим руины
+    // Очистка динамических слоев
+    territoryLayer.removeChildren();
+    iconLayerRes.removeChildren();
+    iconLayerMisc.removeChildren();
+    iconLayerCiv.removeChildren();
+    iconLayerMilitary.removeChildren();
     citiesLayer.removeChildren();
 
     const turn = turnsData[turnIndex];
     if (!turn) return;
 
-    // === 1. ГРАНИЦЫ (TERRITORY) - ФИНАЛЬНЫЙ ФИКС ===
-    const territoryMap = {};
-    const mapW = staticMapData.width;
-    const mapH = staticMapData.height;
+    // === 1. ГРАНИЦЫ (OUTLINE) ===
+    drawTerritoryBorders(turn.territory);
 
-    // 1. Заполняем карту
-    turn.territory.forEach((ownerId, index) => {
-        const q = index % mapW;
-        const r = Math.floor(index / mapW);
-        territoryMap[`${q},${r}`] = ownerId;
-    });
-
-    const graphics = new PIXI.Graphics();
-
-    // МАССИВ СМЕЩЕНИЙ СОСЕДЕЙ (Civ 5 Odd-R)
-    // Порядок важен для маппинга углов!
-    // 0: East, 1: NE (Top-Right), 2: NW (Top-Left), 3: West, 4: SW (Bot-Left), 5: SE (Bot-Right)
-    const getNeighbors = (isOdd) => isOdd ? [
-        { dq: 1, dr: 0 },  // 0: East
-        { dq: 1, dr: 1 },  // 1: Top-Right (Civ NE)
-        { dq: 0, dr: 1 },  // 2: Top-Left (Civ NW)
-        { dq: -1, dr: 0 }, // 3: West
-        { dq: 0, dr: -1 }, // 4: Bottom-Left (Civ SW)
-        { dq: 1, dr: -1 }  // 5: Bottom-Right (Civ SE)
-    ] : [
-        { dq: 1, dr: 0 },  // 0: East
-        { dq: 0, dr: 1 },  // 1: Top-Right
-        { dq: -1, dr: 1 }, // 2: Top-Left
-        { dq: -1, dr: 0 }, // 3: West
-        { dq: -1, dr: -1 },// 4: Bottom-Left
-        { dq: 0, dr: -1 }  // 5: Bottom-Right
-    ];
-
-    // МАППИНГ: Индекс соседа -> Углы грани (в градусах)
-    // 0 градусов = 3 часа (право). По часовой стрелке: 30, 90, 150...
-    // Нам нужно "зеркалить" Y, поэтому Top-грани это 270-330, а Bottom 30-150.
-    const EDGE_ANGLES = [
-        [330, 30],  // 0: East Edge (Right)
-        [270, 330], // 1: Top-Right Edge
-        [210, 270], // 2: Top-Left Edge
-        [150, 210], // 3: West Edge (Left)
-        [90, 150],  // 4: Bottom-Left Edge
-        [30, 90]    // 5: Bottom-Right Edge
-    ];
-
-    turn.territory.forEach((ownerId, index) => {
-        if (ownerId === -1) return;
-
-        const q = index % mapW;
-        const r = Math.floor(index / mapW);
-        const center = getHexPosition(q, r);
-        const color = getPlayerColorInt(ownerId);
-        
-        // В Civ 5 Odd-R: нечетные (Odd) ряды сдвинуты вправо
-        const isOdd = (r % 2) === 1;
-        const neighborsOffsets = getNeighbors(isOdd);
-
-        neighborsOffsets.forEach((offset, dirIndex) => {
-            let nQ = q + offset.dq;
-            let nR = r + offset.dr;
-
-            // Зацикливание по X
-            if (nQ < 0) nQ += mapW;
-            if (nQ >= mapW) nQ -= mapW;
-
-            // Проверка соседа
-            let neighborOwner = -1;
-            if (nR >= 0 && nR < mapH) {
-                const key = `${nQ},${nR}`;
-                if (territoryMap[key] !== undefined) {
-                    neighborOwner = territoryMap[key];
-                }
-            }
-
-            // РИСУЕМ ГРАНЬ, ЕСЛИ ВЛАДЕЛЬЦЫ РАЗНЫЕ
-            if (neighborOwner !== ownerId) {
-                const angles = EDGE_ANGLES[dirIndex];
-                const a1 = (Math.PI / 180) * angles[0];
-                const a2 = (Math.PI / 180) * angles[1];
-
-                const x1 = center.x + HEX_RADIUS * Math.cos(a1);
-                const y1 = center.y + HEX_RADIUS * Math.sin(a1);
-                const x2 = center.x + HEX_RADIUS * Math.cos(a2);
-                const y2 = center.y + HEX_RADIUS * Math.sin(a2);
-
-                graphics.lineStyle(3, color, 0.8); // 0.8 alpha чтобы не было слишком жестко
-                graphics.moveTo(x1, y1);
-                graphics.lineTo(x2, y2);
-            }
-        });
-    });
-
-    territoryLayer.addChild(graphics);
-
-    // === 2. ОБЪЕКТЫ КАРТЫ (РУИНЫ / ЛАГЕРЯ) ===
-    if (turn.mapObjects) {
-        turn.mapObjects.forEach(obj => {
-            const pos = getHexPosition(obj.x, obj.y);
-            
-            let spriteName = null;
-            if (obj.type === "RUIN") spriteName = "IMPROVEMENT_GOODY_HUT";
-            if (obj.type === "CAMP") spriteName = "IMPROVEMENT_BARBARIAN_CAMP";
-            
-            // Пытаемся найти спрайт, иначе рисуем кружок
-            const sprite = getSpriteFromAsset(spriteName, HEX_WIDTH * 0.7, HEX_WIDTH * 0.7);
-            
-            if (sprite) {
-                sprite.x = pos.x; sprite.y = pos.y;
-                mapObjectsLayer.addChild(sprite);
-            } else {
-                // Фолбэк графика
-                const g = new PIXI.Graphics();
-                g.beginFill(obj.type === "RUIN" ? 0xFFD700 : 0xFF0000); // Золотой или Красный
-                g.drawCircle(0, 0, 10);
-                g.endFill();
-                g.x = pos.x; g.y = pos.y;
-                mapObjectsLayer.addChild(g);
-            }
-        });
-    }
-
-    // === 3. ГОРОДА (Обновленная логика) ===
+    // === 2. ГОРОДА ===
     turn.cities.forEach(city => {
         const pos = getHexPosition(city.x, city.y);
+        const color = getPlayerColorInt(city.owner);
         
         const g = new PIXI.Container();
         g.x = pos.x; g.y = pos.y;
+
+        // Фон названия (полупрозрачный)
+        const bg = new PIXI.Graphics();
+        bg.beginFill(0x000000, 0.6);
+        bg.drawRoundedRect(-40, -32, 80, 18, 4); 
+        bg.endFill();
         
+        // High-DPI Текст
+        // Создаем текст в 2x размере и сжимаем, чтобы было четко
+        const nameText = new PIXI.Text(city.name, {
+            fontFamily: 'Segoe UI', fontSize: 24, fill: color,
+            fontWeight: 'bold', stroke: 0x000000, strokeThickness: 4,
+            lineJoin: 'round'
+        });
+        nameText.resolution = 2; // Важно для четкости
+        nameText.scale.set(0.5); // Возвращаем размер
+        nameText.anchor.set(0.5, 1);
+        nameText.position.set(0, -16); // Над гексом
+
         // Квадратик города
         const box = new PIXI.Graphics();
-        const color = getPlayerColorInt(city.owner);
-        box.beginFill(0x333333); 
-        box.lineStyle(2, color); // Цвет границы = цвет владельца
-        box.drawRect(-12, -12, 24, 24);
-        box.endFill();
+        box.beginFill(0x222222);
+        box.lineStyle(2, color);
+        box.drawRect(-10, -10, 20, 20);
         
-        // Полоска здоровья города
-        if (city.hp < 200) { // Обычно 200 это макс
-             const hpPct = Math.max(0, city.hp / 200);
-             box.beginFill(0x00FF00);
-             box.drawRect(-12, -15, 24 * hpPct, 3); // Полоска сверху
-             box.endFill();
-        }
-
-        // Текст (Название + Население)
-        const nameText = new PIXI.Text(city.name, {
-            fontFamily: 'Arial', 
-            fontSize: 14, // Попробуй уменьшить
-            fill: 0xffffff,
-            stroke: 0x000000, 
-            strokeThickness: 3,
-            fontWeight: 'bold',
-            lineJoin: 'round' // Сглаживает углы обводки
+        // Интерактив (Клик по городу)
+        box.eventMode = 'static';
+        box.cursor = 'pointer';
+        box.on('pointerdown', () => {
+            if (window.appVue) window.appVue.selectCity(city.id); // Передаем ID!
         });
-        nameText.resolution = 2; // <--- ВАЖНО: Увеличиваем разрешение текстуры текста
-        nameText.scale.set(0.5); // И сжимаем обратно, чтобы он был четким, но маленьким
-        nameText.anchor.set(0.5, 1.6); // Над квадратом
 
-        // Иконка производства (если есть данные)
-        if (city.prodItem) {
-             const prodText = new PIXI.Text(`🛠 ${city.prodTurns}`, {
-                 fontFamily: 'Arial', fontSize: 10, fill: 0xcccccc
-             });
-             prodText.anchor.set(0.5, -1.2); // Под квадратом
-             g.addChild(prodText);
-        }
-
-        g.addChild(box);
+        g.addChild(bg);
         g.addChild(nameText);
-        
-        // Интерактивность для клика
-        g.eventMode = 'static';
-        g.cursor = 'pointer';
-        g.on('pointerdown', () => {
-            // Вызываем Vue метод (через глобальное событие или dispatch)
-            // Но проще всего, если Vue компонент сам следит за window.selectedCity
-            if (window.appVue) {
-                window.appVue.selectCity(city);
-            }
-        });
-
+        g.addChild(box);
         citiesLayer.addChild(g);
     });
 
-    // === 4. ЮНИТЫ (Обновленная логика цветов) ===
-    turn.units.forEach(unit => {
-        const pos = getHexPosition(unit.x, unit.y);
-        // ... (код юнитов остается похожим, только цвет берем через функцию) ...
-        // Используй getPlayerColorInt(unit.owner) для кружка
+    // === 3. ИКОНКИ (СИСТЕМА 4-Х КВАДРАНТОВ) ===
+    // Собираем объекты по тайлам
+    const tileObjects = {}; // "x,y" -> { mil:[], civ:[], res:[], misc:[] }
+
+    // А. Ресурсы
+    staticMapData.tiles.forEach((t, i) => {
+        if (t.r >= 0) {
+            const key = getTileKey(t.x !== undefined ? t.x : i % staticMapData.width, t.y !== undefined ? t.y : Math.floor(i / staticMapData.width));
+            if (!tileObjects[key]) tileObjects[key] = { mil:[], civ:[], res:[], misc:[] };
+            
+            const rName = globalReplayData.header.dictionary.resources[t.r];
+            tileObjects[key].res.push({ name: rName });
+        }
+    });
+
+    // Б. Руины / Лагеря / Древности
+    if (turn.mapObjects) {
+        turn.mapObjects.forEach(obj => {
+            const key = getTileKey(obj.x, obj.y);
+            if (!tileObjects[key]) tileObjects[key] = { mil:[], civ:[], res:[], misc:[] };
+            
+            let name = "UNKNOWN";
+            if (obj.type === "RUIN") name = "IMPROVEMENT_GOODY_HUT";
+            if (obj.type === "CAMP") name = "IMPROVEMENT_BARBARIAN_CAMP";
+            tileObjects[key].misc.push({ name: name });
+        });
+    }
+
+    // В. Юниты
+    turn.units.forEach(u => {
+        const key = getTileKey(u.x, u.y);
+        if (!tileObjects[key]) tileObjects[key] = { mil:[], civ:[], res:[], misc:[] };
         
-        // ...
+        const uTypeName = globalReplayData.header.dictionary.units[u.type];
+        const isCiv = CIVILIAN_UNITS.includes(uTypeName);
         
-        // Получаем имя юнита: ID -> UNIT_WARRIOR
-        const unitName = globalReplayData.header.dictionary.units[unit.type];
-        const assetPath = window.ASSET_MAP ? window.ASSET_MAP[unitName] : null;
-    
-        if (assetPath) {
-            let texture = textureCache[assetPath];
-            if (!texture) {
-                texture = PIXI.Texture.from(assetPath);
-                textureCache[assetPath] = texture;
+        const unitObj = { name: uTypeName, owner: u.owner };
+        if (isCiv) tileObjects[key].civ.push(unitObj);
+        else tileObjects[key].mil.push(unitObj);
+    });
+
+    // Отрисовка по режимам
+    Object.keys(tileObjects).forEach(key => {
+        const [qx, ry] = key.split(',').map(Number);
+        const pos = getHexPosition(qx, ry);
+        const objs = tileObjects[key];
+
+        const drawIcon = (obj, layer, dx, dy, scale, showBg, isUnit = false) => {
+            const sprite = getSpriteFromAsset(obj.name, HEX_WIDTH, HEX_WIDTH);
+            if (!sprite) return;
+            
+            const cont = new PIXI.Container();
+            cont.x = pos.x + dx; 
+            cont.y = pos.y + dy;
+            cont.scale.set(scale);
+
+            // Фон (Кружок команды)
+            if (showBg && obj.owner !== undefined) {
+                const bg = new PIXI.Graphics();
+                bg.beginFill(getPlayerColorInt(obj.owner));
+                bg.drawCircle(0, 0, HEX_WIDTH/2);
+                cont.addChild(bg);
             }
-            const sprite = new PIXI.Sprite(texture);
-            sprite.anchor.set(0.5);
-            // Иконки юнитов обычно меньше самого тайла
-            sprite.width = HEX_WIDTH * 0.8; 
-            sprite.height = HEX_WIDTH * 0.8; // Квадратные иконки
-            sprite.x = pos.x;
-            sprite.y = pos.y;
+
+            // ПРИМЕНЯЕМ ФИЛЬТР ТОЛЬКО К СПРАЙТУ ЮНИТА
+            if (isUnit) {
+                sprite.filters = [unitColorFilter];
+                // Часто иконки в ассетах чуть меньше холста, можно их чуть уменьшить
+                // sprite.scale.set(0.9); 
+            }
+
+            cont.addChild(sprite);
+            layer.addChild(cont);
+        };
+
+        const MODE = currentIconMode;
+        
+        // --- PRIORITY MODES (Один большой по центру) ---
+        if (MODE === 'military' && objs.mil.length > 0) {
+            // isUnit = true
+            drawIcon(objs.mil[0], iconLayerMilitary, 0, 0, 0.7, true, true);
+        } 
+        else if (MODE === 'civilian' && objs.civ.length > 0) {
+            // isUnit = true
+            drawIcon(objs.civ[0], iconLayerCiv, 0, 0, 0.7, true, true);
+        }
+        else if (MODE === 'resource' && objs.res.length > 0) {
+            // isUnit = false
+            drawIcon(objs.res[0], iconLayerRes, 0, 0, 1.05, false, false);
+        }
+        else if (MODE === 'misc' && objs.misc.length > 0) {
+            // isUnit = false (Руины не фильтруем, они цветные)
+            drawIcon(objs.misc[0], iconLayerMisc, 0, 0, 1.05, false, false);
+        }
+        // --- DEFAULT MODE (4 Квадранта) ---
+        else if (MODE === 'default') {
+            const offset = HEX_RADIUS * 0.55;
+            const scale = 0.40; 
             
-            // Цветной ободок для владельца (можно нарисовать кружок ПОД спрайтом)
-            const circle = new PIXI.Graphics();
-            const color = getPlayerColorInt(unit.owner);
-            circle.beginFill(color);
-            circle.drawCircle(0, 0, HEX_RADIUS * 0.5);
-            circle.x = pos.x;
-            circle.y = pos.y;
+            if (objs.mil.length > 0) 
+                drawIcon(objs.mil[0], iconLayerMilitary, 0, -offset, scale, true, true);
             
-            unitsLayer.addChild(circle); // Сначала кружок команды
-            unitsLayer.addChild(sprite); // Сверху иконка
-        } else {
-            // ... старый код с цветными кружками ...
-            const g = new PIXI.Graphics();
-            const color = getPlayerColorInt(unit.owner);
-    
-            g.beginFill(color);
-            g.lineStyle(2, 0xffffff);
-            g.drawCircle(0, 0, HEX_RADIUS * 0.6); // Рисуем в 0,0 относительно позиции объекта
-            g.endFill();
+            if (objs.res.length > 0) 
+                drawIcon(objs.res[0], iconLayerRes, offset, 0, scale*1.4, false, false);
             
-            g.x = pos.x;
-            g.y = pos.y;
-    
-            // Интерактивность (тултип)
-            g.eventMode = 'static';
-            g.cursor = 'pointer';
-            g.on('pointerover', () => { g.scale.set(1.2); });
-            g.on('pointerout', () => { g.scale.set(1); });
-    
-            unitsLayer.addChild(g);
+            if (objs.civ.length > 0) 
+                drawIcon(objs.civ[0], iconLayerCiv, 0, offset, scale, true, true);
+            
+            if (objs.misc.length > 0) 
+                drawIcon(objs.misc[0], iconLayerMisc, -offset, 0, scale*1.4, false, false);
         }
     });
 };
 
-// === УПРАВЛЕНИЕ (Zoom/Pan) ===
+// --- АЛГОРИТМ ГРАНИЦ (EDGE DETECTION) ---
 
+function drawTerritoryBorders(territoryArray) {
+    if (!territoryArray) return;
+    
+    const g = new PIXI.Graphics();
+    const W = staticMapData.width;
+    const H = staticMapData.height;
+    
+    // Создаем Map для быстрого доступа
+    const territoryMap = {};
+    territoryArray.forEach((owner, idx) => {
+        territoryMap[idx] = owner;
+    });
+
+    // ПОРЯДОК СОСЕДЕЙ ДЛЯ ОТРИСОВКИ (По часовой стрелке, начиная с Востока)
+    // 0: East, 1: South-East, 2: South-West, 3: West, 4: North-West, 5: North-East
+    
+    // В Civ 5 (0,0) внизу. Значит:
+    // Север (North) = dr: +1
+    // Юг (South)   = dr: -1
+    
+    const getNeighbors = (isOdd) => isOdd ? [
+        { dq: 1, dr: 0 },  // 0: East
+        { dq: 1, dr: -1 }, // 1: South-East (Visual Bottom-Right) -> Civ Odd (dr -1, dq +1)
+        { dq: 0, dr: -1 }, // 2: South-West (Visual Bottom-Left)  -> Civ Odd (dr -1, dq 0)
+        { dq: -1, dr: 0 }, // 3: West
+        { dq: 0, dr: 1 },  // 4: North-West (Visual Top-Left)     -> Civ Odd (dr +1, dq 0)
+        { dq: 1, dr: 1 }   // 5: North-East (Visual Top-Right)    -> Civ Odd (dr +1, dq +1)
+    ] : [
+        { dq: 1, dr: 0 },  // 0: East
+        { dq: 0, dr: -1 }, // 1: South-East -> Civ Even (dr -1, dq 0)
+        { dq: -1, dr: -1 },// 2: South-West -> Civ Even (dr -1, dq -1)
+        { dq: -1, dr: 0 }, // 3: West
+        { dq: -1, dr: 1 }, // 4: North-West -> Civ Even (dr +1, dq -1)
+        { dq: 0, dr: 1 }   // 5: North-East -> Civ Even (dr +1, dq 0)
+    ];
+
+    // Углы граней (Pixi координаты: Y вниз, 0 градусов = 3 часа)
+    // Должны строго соответствовать порядку getNeighbors выше
+    const EDGE_ANGLES = [
+        [330, 30],  // 0: East Edge (Right)
+        [30, 90],   // 1: South-East Edge (Bottom-Right)
+        [90, 150],  // 2: South-West Edge (Bottom-Left)
+        [150, 210], // 3: West Edge (Left)
+        [210, 270], // 4: North-West Edge (Top-Left)
+        [270, 330]  // 5: North-East Edge (Top-Right)
+    ];
+
+    territoryArray.forEach((owner, idx) => {
+        if (owner === -1) return; // Ничья земля
+
+        const q = idx % W;
+        const r = Math.floor(idx / W);
+        const center = getHexPosition(q, r);
+        const color = getPlayerColorInt(owner);
+
+        const isOdd = (r % 2) !== 0; 
+        const neighbors = getNeighbors(isOdd);
+
+        neighbors.forEach((n, dirIdx) => {
+            // Координаты соседа
+            let nQ = q + n.dq;
+            let nR = r + n.dr;
+            
+            // Зацикливание карты по X (World Wrap)
+            if (nQ < 0) nQ += W;
+            if (nQ >= W) nQ -= W;
+
+            let neighborOwner = -1;
+            if (nR >= 0 && nR < H) {
+                const nIdx = nR * W + nQ;
+                neighborOwner = territoryMap[nIdx];
+                if (neighborOwner === undefined) neighborOwner = -1;
+            }
+
+            // РИСУЕМ ЛИНИЮ ТОЛЬКО ЕСЛИ ВЛАДЕЛЬЦЫ РАЗНЫЕ
+            if (owner !== neighborOwner) {
+                const angles = EDGE_ANGLES[dirIdx];
+                const rRad = HEX_RADIUS; // Радиус описанной окружности
+                
+                // Вычисляем координаты концов грани
+                const a1 = (Math.PI / 180) * angles[0];
+                const a2 = (Math.PI / 180) * angles[1];
+                
+                const x1 = center.x + rRad * Math.cos(a1);
+                const y1 = center.y + rRad * Math.sin(a1);
+                const x2 = center.x + rRad * Math.cos(a2);
+                const y2 = center.y + rRad * Math.sin(a2);
+
+                g.lineStyle(3, color, 0.8);
+                g.moveTo(x1, y1);
+                g.lineTo(x2, y2);
+            }
+        });
+    });
+
+    territoryLayer.addChild(g);
+}
+
+// --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+
+function getTileKey(x, y) { return `${x},${y}`; }
+
+function drawHexPoly(g, x, y, r) {
+    const path = [];
+    for (let i = 0; i < 6; i++) {
+        const angle = (Math.PI / 180) * (60 * i + 30);
+        path.push(x + r * Math.cos(angle)); 
+        path.push(y + r * Math.sin(angle));
+    }
+    g.drawPolygon(path);
+}
+
+function getHexPosition(q, r) {
+    const invR = staticMapData.height - 1 - r; 
+    const x = HEX_WIDTH * (q + 0.5 * (r % 2));
+    const y = invR * (HEX_RADIUS * 1.5);
+    return { 
+        x: x - (staticMapData.width * HEX_WIDTH)/2, 
+        y: y - (staticMapData.height * HEX_RADIUS * 1.5)/2 
+    };
+}
+
+function getPlayerColorInt(id) {
+    if (id === -1 || id === undefined) return 0x000000;
+    if (id === 63) return 0x222222; // Barbarians
+    if (id >= 22 && id < 63) return 0x444444; // CS
+    
+    // Цвета мажоров (Civ 5 style)
+    const pal = [
+        0xda2020, // 0: Songhai/Austria (Red)
+        0x3366cc, // 1: America/France (Blue)
+        0xffcc00, // 2: Egypt (Yellow)
+        0x00aa00, // 3: India (Green)
+        0xcc6600, // 4: England (Orange)
+        0x990099, // 5: Rome (Purple)
+        0x009999, // 6: Aztec (Cyan)
+        0xffffff, // 7: White
+        0x888888, // 8: Gray
+    ];
+    return pal[id % pal.length];
+}
+
+// Управление камерой (Zoom/Pan)
 function setupInteraction() {
     let isDragging = false;
     let lastPos = null;
 
-    // Фон (весь экран) ловит события
     app.stage.eventMode = 'static';
     app.stage.hitArea = app.screen;
 
@@ -515,65 +574,25 @@ function setupInteraction() {
     app.stage.on('pointermove', (e) => {
         if (!isDragging) return;
         const newPos = e.global;
-        
         mapContainer.x += newPos.x - lastPos.x;
         mapContainer.y += newPos.y - lastPos.y;
-        
         lastPos = newPos.clone();
     });
 
-    // Zoom (Колесико)
-    // Pixi не ловит wheel сам по себе, используем DOM
     document.getElementById('pixi-container').addEventListener('wheel', (e) => {
         e.preventDefault();
         const scaleFactor = e.deltaY > 0 ? 0.9 : 1.1;
-        
-        // Зум в точку курсора (математика)
         const worldPos = mapContainer.toLocal(new PIXI.Point(e.clientX, e.clientY));
-        
         mapContainer.scale.x *= scaleFactor;
         mapContainer.scale.y *= scaleFactor;
-        
-        // Корректируем позицию, чтобы зумить в мышку
         const newWorldPos = mapContainer.toGlobal(worldPos);
         mapContainer.x -= (newWorldPos.x - e.clientX);
         mapContainer.y -= (newWorldPos.y - e.clientY);
     });
 }
 
-// Камера к городу
 window.moveCameraTo = function(q, r) {
     const pos = getHexPosition(q, r);
-    // Хотим, чтобы pos в мировых координатах оказался в центре экрана
-    // center = (pos * scale) + containerOffset
-    // containerOffset = center - (pos * scale)
-    
     mapContainer.x = (app.screen.width / 2) - (pos.x * mapContainer.scale.x);
     mapContainer.y = (app.screen.height / 2) - (pos.y * mapContainer.scale.y);
-}
-
-// Палитра стандартных цветов Цивилизации
-const PLAYER_PALETTE = [
-    0xda2020, // 0: Красный (Австрия/Япония и тд) - условно
-    0x3366cc, // 1: Синий
-    0xffcc00, // 2: Желтый
-    0x00aa00, // 3: Зеленый
-    0xcc6600, // 4: Оранжевый
-    0x990099, // 5: Фиолетовый
-    0x009999, // 6: Циан
-    0xffffff, // 7: Белый
-    0x888888, // 8: Серый
-];
-
-function getPlayerColorInt(playerId) {
-    // 63 - это обычно Варвары в Civ 5
-    if (playerId === 63) return 0x222222; // Темно-серый/Черный
-    
-    // ГГ обычно имеют высокие ID (22+)
-    if (playerId >= 22 && playerId < 63) {
-        // Генерируем оттенок серого/темного
-        return 0x444444; 
-    }
-    
-    return PLAYER_PALETTE[playerId % PLAYER_PALETTE.length] || 0xffffff;
-}
+};
