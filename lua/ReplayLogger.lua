@@ -423,24 +423,56 @@ end
 function ReplayLogger.GetGameDictionaries()
   local dict = {
       civilizations = {}, units = {}, buildings = {}, 
-      technologies = {}, policies = {},
-      terrains = {}, features = {}, improvements = {}, resources = {}
+      technologies = {}, policies = {}, policyBranches = {},
+      terrains = {}, features = {}, improvements = {}, resources = {},
+      beliefs = {}
   }
   
-  local function FillDict(dest, tableName)
-      for row in GameInfo[tableName]() do dest[tostring(row.ID)] = row.Type end
+  -- 1. ОПРЕДЕЛЕНИЕ ФУНКЦИИ (Должно быть в самом начале!)
+  -- Универсальный заполнитель: ID -> { type, name }
+  local function FillDictFull(dest, tableName)
+      for row in GameInfo[tableName]() do 
+          dest[tostring(row.ID)] = {
+              type = row.Type,
+              name = Locale.ConvertTextKey(row.Description)
+          }
+      end
   end
 
-  FillDict(dict.civilizations, "Civilizations")
-  FillDict(dict.units, "Units")
-  FillDict(dict.buildings, "Buildings")
-  FillDict(dict.policies, "Policies")
-  FillDict(dict.terrains, "Terrains")
-  FillDict(dict.features, "Features")
-  FillDict(dict.improvements, "Improvements")
-  FillDict(dict.resources, "Resources")
+  -- 2. ВЫЗОВЫ (Строго после определения)
+  FillDictFull(dict.civilizations, "Civilizations")
+  FillDictFull(dict.units, "Units")
+  FillDictFull(dict.buildings, "Buildings")
+  FillDictFull(dict.terrains, "Terrains")
+  FillDictFull(dict.features, "Features")
+  FillDictFull(dict.improvements, "Improvements")
+  FillDictFull(dict.resources, "Resources")
+  
+  -- Политики
+  dict.policies = {}
+  for row in GameInfo.Policies() do
+      dict.policies[tostring(row.ID)] = {
+          type = row.Type,
+          name = Locale.ConvertTextKey(row.Description),
+          branch = row.PolicyBranchType
+      }
+  end
 
-  -- ОСОБЫЙ СБОР ДЛЯ ТЕХНОЛОГИЙ (нужна структура для дерева)
+  -- Ветки политик
+  for row in GameInfo.PolicyBranchTypes() do
+      dict.policyBranches[row.Type] = Locale.ConvertTextKey(row.Description)
+  end
+
+  -- Верования
+  for row in GameInfo.Beliefs() do
+      dict.beliefs[tostring(row.ID)] = {
+          type = row.Type, 
+          name = Locale.ConvertTextKey(row.ShortDescription),
+          desc = Locale.ConvertTextKey(row.Description)
+      }
+  end
+
+  -- Технологии
   dict.technologies = {}
   for row in GameInfo.Technologies() do
       local prereqs = {}
@@ -448,17 +480,11 @@ function ReplayLogger.GetGameDictionaries()
           local pRow = GameInfo.Technologies[pr.PrereqTech]
           if pRow then table.insert(prereqs, pRow.ID) end
       end
-
       dict.technologies[tostring(row.ID)] = {
           type = row.Type,
-          -- ВАЖНО: Используем Locale.ConvertTextKey для перевода
           name = Locale.ConvertTextKey(row.Description), 
-          gridX = row.GridX,
-          gridY = row.GridY,
-          cost = row.Cost,
-          prereqs = prereqs,
-          -- Добавим иконку (обычно это атлас, но пока просто имя файла или индекс)
-          icon = row.PortraitIndex
+          gridX = row.GridX, gridY = row.GridY,
+          cost = row.Cost, prereqs = prereqs
       }
   end
 
@@ -621,6 +647,34 @@ function ReplayLogger.GetTurnSnapshot(iTurn)
                       end
                   end
                   pData.policies = policies
+                  
+                  -- РЕЛИГИЯ И ПАНТЕОНЫ
+                  local eReligion = p:GetReligionCreatedByPlayer()
+                  
+                  -- 1. Если есть Полноценная Религия
+                  if eReligion > 0 and eReligion ~= -1 then
+                      local beliefs = {}
+                      for _, beliefID in ipairs(Game.GetBeliefsInReligion(eReligion)) do
+                          table.insert(beliefs, beliefID)
+                      end
+                      
+                      pData.religion = {
+                          type = "RELIGION",
+                          name = Game.GetReligionName(eReligion),
+                          beliefs = beliefs
+                      }
+                      
+                  -- 2. Если Религии нет, но есть Пантеон
+                  elseif p:HasCreatedPantheon() then
+                      local pantheonBelief = p:GetBeliefInPantheon()
+                      if pantheonBelief > -1 then
+                          pData.religion = {
+                              type = "PANTHEON",
+                              name = "Pantheon", -- Локализация на фронте или тут (TXT_KEY_RELIGION_PANTHEON)
+                              beliefs = { pantheonBelief }
+                          }
+                      end
+                  end
               end
 
               -- Для варваров можно добавить специфичные поля, если нужно, 
@@ -754,7 +808,7 @@ function ReplayLogger.GetTurnSnapshot(iTurn)
                       gpProgress = gpProgress, -- <--- Новое: прогресс GP
                       
                       yields = yields,
-                      prodItem = city:GetProductionNameKey(), 
+                      prodItem = Locale.ConvertTextKey(city:GetProductionNameKey()), 
                       prodTurns = city:GetProductionTurnsLeft(),
                       worked = worked,
                       locked = locked

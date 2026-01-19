@@ -58,6 +58,8 @@
             </div>
 
             <button @click="showTechTree = !showTechTree" :style="{background: showTechTree?'#4a4':''}">🧪 Tech</button>
+            <button @click="showCulture = !showCulture" :style="{background: showCulture?'#a4a':''}">🎵 Culture</button>
+            <button @click="showReligion = !showReligion" :style="{background: showReligion?'#ddda':''}">🕊️ Faith</button>
 
             <div style="display: flex; gap: 10px; align-items: center;">
                 <button @click="changeTurn(-1)">⏮</button>
@@ -124,7 +126,7 @@
         <div style="position: relative; width: 4000px; height: 1000px; padding: 50px;">
 
             <!-- ЛЕГЕНДА (Фиксированная плашка сверху или сбоку) -->
-            <div style="position: sticky; top: 10px; left: 10px; z-index: 100; display: flex; gap: 10px; pointer-events: none;">
+            <div style="position: fixed; bottom: 20px; left: 10px; z-index: 100; display: flex; gap: 10px; pointer-events: none;">
                 <div v-for="p in visiblePlayers.filter(x=>!x.isMinor)" :key="p.id" 
                      style="background: rgba(0,0,0,0.8); padding: 5px 10px; border-radius: 4px; border: 1px solid #555; display: flex; align-items: center; gap: 5px;">
                     <div :style="{width:'10px', height:'10px', background: getPlayerColor(p.id)}"></div>
@@ -189,7 +191,97 @@
             </div>
 
         </div>
-        </div>  
+        </div> 
+        <!-- CULTURE MODAL -->
+        <div v-if="showCulture" class="interactive" style="
+        position: absolute; top: 60px; left: 0; right: 0; bottom: 0; 
+        background: rgba(15,10,20, 0.95); 
+        overflow: auto; z-index: 50; padding: 20px;
+        display: flex; gap: 20px;
+        ">
+            <div v-for="p in visiblePlayers.filter(x => !x.isMinor)" :key="p.id" style="min-width: 250px; background: rgba(255,255,255,0.05); padding: 15px; border-radius: 8px;">
+                <!-- Заголовок игрока -->
+                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px; border-bottom: 2px solid #444; padding-bottom: 5px;">
+                    <div :style="{width:'16px', height:'16px', borderRadius:'50%', background: getPlayerColor(p.id)}"></div>
+                    <b style="font-size: 1.2em;">{{ getCivilizationName(p.id) }}</b>
+                    <div style="margin-left: auto; color: #d0f;">🎵 {{ Math.floor(p.totalCulture) }}</div>
+                </div>
+
+                <!-- Список веток -->
+                <div v-if="playerPoliciesGrouped[p.id]">
+                    <div v-for="(pols, branchName) in playerPoliciesGrouped[p.id]" :key="branchName" style="margin-bottom: 15px;">
+                        <div style="color: #aaa; text-transform: uppercase; font-size: 0.85em; margin-bottom: 5px; border-bottom: 1px solid #333;">
+                            {{ branchName }}
+                        </div>
+                        <div v-for="polName in pols" :key="polName" style="padding-left: 10px; font-size: 0.95em; color: #ddd;">
+                            • {{ polName }}
+                        </div>
+                    </div>
+                </div>
+                <div v-else style="color: #666; font-style: italic;">Нет принятых политик</div>
+            </div>
+        </div>
+        <!-- RELIGION MODAL -->
+        <div v-if="showReligion" class="interactive" style="
+        position: absolute; top: 60px; left: 0; right: 0; bottom: 0; 
+        background: rgba(20,20,15, 0.95); 
+        overflow: auto; z-index: 50; padding: 30px;
+        display: flex; flex-wrap: wrap; gap: 30px; justify-content: center;
+        ">
+        <div v-for="p in religiousPlayers" :key="p.id" style="
+            width: 320px; 
+            background: #222; 
+            border: 1px solid #666; 
+            border-radius: 6px; 
+            box-shadow: 0 4px 10px rgba(0,0,0,0.5); 
+            display: flex; flex-direction: column;
+            overflow: hidden;
+        ">
+            <!-- Шапка: Меняем цвет если это Пантеон -->
+            <div :style="{
+                background: p.religion.type === 'PANTHEON' ? '#443' : '#222', 
+                padding: '12px', 
+                borderBottom: '1px solid #666', 
+                textAlign: 'center',
+                borderTop: '4px solid ' + getPlayerColor(p.id)
+            }">
+                <!-- Название -->
+                <div style="font-size: 1.4em; font-weight: bold; color: white;">
+                    <span v-if="p.religion.type === 'PANTHEON'">⚡ </span>
+                    <span v-else>🕊️ </span>
+                    {{ p.religion.name }}
+                </div>
+                
+                <!-- Подпись основателя -->
+                <div style="font-size: 0.9em; color: #ccc; margin-top: 5px;">
+                    {{ getCivilizationName(p.id) }}
+                </div>
+                
+                <!-- Статус -->
+                <div v-if="p.religion.type === 'PANTHEON'" style="font-size: 0.75em; color: #aaa; text-transform: uppercase; letter-spacing: 1px; margin-top: 2px;">
+                    (Pantheon only)
+                </div>
+            </div>
+
+            <!-- Список Верований -->
+            <div style="padding: 15px; flex: 1; background: rgba(0,0,0,0.2);">
+                <div v-for="bId in p.religion.beliefs" :key="bId" style="margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #444;">
+                    <div v-if="replayData.header.dictionary.beliefs[bId]">
+                        <div style="color: #eec; font-weight: bold; font-size: 1em; margin-bottom: 4px;">
+                            {{ replayData.header.dictionary.beliefs[bId].name }}
+                        </div>
+                        <div style="color: #bbb; font-size: 0.85em; line-height: 1.35; font-style: italic;">
+                            {{ replayData.header.dictionary.beliefs[bId].desc }}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div v-if="religiousPlayers.length === 0" style="color: #888; margin-top: 50px; font-size: 1.5em; width: 100%; text-align: center;">
+            Нет основанных пантеонов и религий
+        </div>
+        </div>
     </div>
     
     <div v-else style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); color:white;">
@@ -306,6 +398,8 @@
                 iconMode: 'default',
 
                 showTechTree: false, // Открыто ли окно
+                showCulture: false,
+                showReligion: false,
                 techTreeScale: 1,    // Зум дерева (если захотим)
                 
                 playerColors: [0xda2020, 0x3366cc, 0xffcc00, 0x00aa00, 0xcc6600, 0x990099, 0x009999, 0xffffff]
@@ -411,7 +505,41 @@
                     }
                 });
                 return links;
+            },
+                // Группировка политик по веткам для каждого игрока
+            // Возвращает: { playerId: { 'Tradition': ['Aristocracy', ...], 'Liberty': [...] } }
+            playerPoliciesGrouped() {
+                if (!this.replayData || !this.visiblePlayers) return {};
+                
+                const dictPol = this.replayData.header.dictionary.policies;
+                const dictBranch = this.replayData.header.dictionary.policyBranches;
+                const res = {};
+
+                this.visiblePlayers.forEach(p => {
+                    if (!p.policies) return;
+                    
+                    const groups = {};
+                    
+                    p.policies.forEach(polId => {
+                        const polDef = dictPol[polId];
+                        if (polDef && polDef.branch) {
+                            // Получаем красивое имя ветки ("Традиция") или техническое
+                            const branchName = dictBranch[polDef.branch] || polDef.branch.replace('POLICY_BRANCH_', '');
+                            
+                            if (!groups[branchName]) groups[branchName] = [];
+                            groups[branchName].push(polDef.name);
+                        }
+                    });
+                    res[p.id] = groups;
+                });
+                return res;
+            },
+            
+            // Список игроков, у которых есть религия (для меню Религии)
+            religiousPlayers() {
+                return this.visiblePlayers.filter(p => p.religion);
             }
+
         },
         watch: {
             // При смене режима перерисовываем карту
@@ -467,9 +595,10 @@
                 if (window.highlightWorkedPlots) window.highlightWorkedPlots([], [], 0);
             },
             getBuildingName(id) {
-                if (!this.replayData.header.dictionary.buildings) return id;
-                let name = this.replayData.header.dictionary.buildings[id] || "Unknown";
-                return name.replace("BUILDING_", "").replace(/_/g, " ");
+                if (!this.replayData || !this.replayData.header.dictionary.buildings) return id;
+                const def = this.replayData.header.dictionary.buildings[id];
+                // Берем NAME для текста
+                return def ? def.name : `Building #${id}`;
             },
             getCivilizationName(playerId) {
                 if (playerId === 63) return "Barbarians";

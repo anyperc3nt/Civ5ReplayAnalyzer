@@ -255,7 +255,11 @@ function getMissingTexture() {
 
 function getSpriteFromAsset(assetName, w, h) {
     // 1. Если имени нет - сразу возвращаем null (пустоту)
-    if (!assetName) return null;
+    if (!assetName) {
+        // Раскомментируй для отладки, если снова пропадут текстуры
+        // console.warn("getSpriteFromAsset called with empty name!"); 
+        return null;
+    }
 
     let tex = null;
     
@@ -299,7 +303,8 @@ function drawStaticTerrain() {
 
         // 1. TERRAIN (Ландшафт - Подложка)
         // Рисуем ВСЕГДА, даже если это гора. Гора просто встанет сверху.
-        let tName = globalReplayData.header.dictionary.terrains[tile.t];
+        let tDef = globalReplayData.header.dictionary.terrains[tile.t];
+        let tName = tDef ? tDef.type : null; // Берем TYPE!
         
         const tSprite = getSpriteFromAsset(tName, HEX_WIDTH*1.05, HEX_HEIGHT*1.05);
         if (tSprite) {
@@ -318,7 +323,8 @@ function drawStaticTerrain() {
 
         // 2. FEATURES (Лес/Джунгли) - Рисуем ПЕРЕД холмами
         if (tile.f >= 0) {
-            const fName = globalReplayData.header.dictionary.features[tile.f];
+            const fDef = globalReplayData.header.dictionary.features[tile.f];
+            const fName = fDef ? fDef.type : null;
             const fSprite = getSpriteFromAsset(fName, HEX_WIDTH, HEX_HEIGHT);
             if (fSprite) {
                 fSprite.x = pos.x; fSprite.y = pos.y;
@@ -387,7 +393,8 @@ window.updatePixiTurn = function(turnIndex) {
         
         // Рисуем Лес/Джунгли
         if (state.f >= 0) {
-            const fName = globalReplayData.header.dictionary.features[state.f];
+            const fDef = globalReplayData.header.dictionary.features[state.f];
+            const fName = fDef ? fDef.type : null;
             const q = idx % staticMapData.width;
             const r = Math.floor(idx / staticMapData.width);
             const pos = getHexPosition(q, r);
@@ -464,23 +471,17 @@ window.updatePixiTurn = function(turnIndex) {
         
         // Ресурс
         if (state.r >= 0) {
-            const rName = globalReplayData.header.dictionary.resources[state.r];
-            tileObjects[key].res.push({ name: rName });
+            // Было: const rName = globalReplayData.header.dictionary.resources[state.r];
+            const rDef = globalReplayData.header.dictionary.resources[state.r];
+            // Важно: в tileObjects мы кладем имя для иконки, значит тоже TYPE
+            if (rDef) tileObjects[key].res.push({ name: rDef.type });
         }
         
         // Улучшение (Ферма, Шахта)
+        // Улучшение
         if (state.i >= 0) {
-            const iName = globalReplayData.header.dictionary.improvements[state.i];
-            // Игнорируем "IMPROVEMENT_BARBARIAN_CAMP" и "RUINS" здесь, 
-            // так как они приходят отдельно в mapObjects? 
-            // НЕТ! В новом Lua мы НЕ шлем mapObjects отдельно, мы шлем их как улучшения тайла?
-            // А, стоп. В Lua v2.0 mapObjects (Camp/Ruin) собирались отдельно.
-            // Но теперь мы добавили 'mapChanges' с полем 'i' (Improvement).
-            // Лагерь варваров - это тоже Improvement. 
-            // Если Lua шлет Improvement ID, то мы можем рисовать его отсюда.
-            
-            // Если имя валидное - добавляем
-            if (iName) tileObjects[key].imp.push({ name: iName });
+            const iDef = globalReplayData.header.dictionary.improvements[state.i];
+            if (iDef) tileObjects[key].imp.push({ name: iDef.type });
         }
     });
 
@@ -511,7 +512,8 @@ window.updatePixiTurn = function(turnIndex) {
         const key = getTileKey(u.x, u.y);
         if (!tileObjects[key]) tileObjects[key] = { mil:[], civ:[], res:[], misc:[] };
         
-        const uTypeName = globalReplayData.header.dictionary.units[u.type];
+        const uDef = globalReplayData.header.dictionary.units[u.type];
+        const uTypeName = uDef ? uDef.type : "UNIT_UNKNOWN"; // TYPE для логики и ассетов
         const isCiv = CIVILIAN_UNITS.includes(uTypeName);
         
         const unitObj = { name: uTypeName, owner: u.owner };
