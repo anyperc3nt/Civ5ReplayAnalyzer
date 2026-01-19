@@ -56,7 +56,9 @@
             <div>
                 <b>Civ5 Replay</b> <span style="font-size: 0.8em; color: #888;">{{ currentTurnData?.timestamp ? new Date(currentTurnData.timestamp * 1000).toLocaleTimeString() : '' }}</span>
             </div>
-            
+
+            <button @click="showTechTree = !showTechTree" :style="{background: showTechTree?'#4a4':''}">🧪 Tech</button>
+
             <div style="display: flex; gap: 10px; align-items: center;">
                 <button @click="changeTurn(-1)">⏮</button>
                 <div style="width: 50px; text-align: center; font-size: 20px; font-weight: bold;">{{ currentTurn }}</div>
@@ -112,6 +114,82 @@
                 <span>Pop: {{ city.pop }}</span>
             </div>
         </div>
+        <!-- TECH TREE MODAL -->
+        <div v-if="showTechTree" class="interactive" style="
+        position: absolute; top: 60px; left: 0; right: 0; bottom: 0; 
+        background: rgba(10,12,16, 0.95); 
+        overflow: auto; /* Скролл */
+        z-index: 50;
+        ">
+        <div style="position: relative; width: 4000px; height: 1000px; padding: 50px;">
+
+            <!-- ЛЕГЕНДА (Фиксированная плашка сверху или сбоку) -->
+            <div style="position: sticky; top: 10px; left: 10px; z-index: 100; display: flex; gap: 10px; pointer-events: none;">
+                <div v-for="p in visiblePlayers.filter(x=>!x.isMinor)" :key="p.id" 
+                     style="background: rgba(0,0,0,0.8); padding: 5px 10px; border-radius: 4px; border: 1px solid #555; display: flex; align-items: center; gap: 5px;">
+                    <div :style="{width:'10px', height:'10px', background: getPlayerColor(p.id)}"></div>
+                    <span style="font-size: 12px; color: #fff;">{{ getCivilizationName(p.id) }}</span>
+                </div>
+            </div>
+            
+            <!-- 1. СЛОЙ СВЯЗЕЙ (SVG) -->
+            <svg style="position: absolute; top:0; left:0; width: 100%; height: 100%; pointer-events: none;">
+                <path v-for="(link, i) in techTreeLinks" :key="i"
+                    :d="`M ${link.x1} ${link.y1} C ${link.x1+30} ${link.y1}, ${link.x2-30} ${link.y2}, ${link.x2} ${link.y2}`"
+                    stroke="#555" stroke-width="2" fill="none" />
+            </svg>
+
+            <!-- 2. СЛОЙ КАРТОЧЕК -->
+            <div v-for="node in techTreeNodes" :key="node.id" 
+                 :style="{
+                    position: 'absolute',
+                    left: node.x + 'px',
+                    top: node.y + 'px',
+                    width: '180px',
+                    height: '60px',
+                    background: '#222',
+                    border: '1px solid #444',
+                    borderRadius: '4px',
+                    padding: '4px',
+                    fontSize: '11px',
+                    color: '#eee',
+                    boxShadow: '0 2px 4px rgba(0,0,0,0.5)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    justifyContent: 'space-between'
+                 }">
+                
+                <!-- Верх: Название и Цена -->
+                <div style="display: flex; justify-content: space-between;">
+                    <div style="font-weight: bold; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; max-width: 130px;" :title="node.name">
+                        {{ node.name }}
+                    </div>
+                    <div style="color: #888; font-size: 10px;">{{ node.cost }}</div>
+                </div>
+
+                <!-- Низ: Индикаторы игроков (Чипы) -->
+                <div style="display: flex; gap: 2px; height: 12px; margin-top: auto;">
+                    <div v-for="ps in node.playerStatuses" :key="ps.id" 
+                         :title="getCivilizationName(ps.id) + ': ' + ps.status"
+                         :style="{
+                            flex: 1,
+                            borderRadius: '2px',
+                            // ЛОГИКА ЦВЕТОВ
+                            background: ps.status === 'researched' ? ps.color : 
+                                        ps.status === 'current' ? 'transparent' : '#333',
+                            
+                            border: ps.status === 'current' ? ('2px solid ' + ps.color) : 
+                                    ps.status === 'none' ? '1px solid #333' : '1px solid ' + ps.color,
+                            
+                            opacity: ps.status === 'none' ? 0.3 : 1
+                         }">
+                    </div>
+                </div>
+
+            </div>
+
+        </div>
+        </div>  
     </div>
     
     <div v-else style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); color:white;">
@@ -226,6 +304,9 @@
                 
                 // Режимы иконок: 'default', 'military', 'resource', 'civilian', 'misc'
                 iconMode: 'default',
+
+                showTechTree: false, // Открыто ли окно
+                techTreeScale: 1,    // Зум дерева (если захотим)
                 
                 playerColors: [0xda2020, 0x3366cc, 0xffcc00, 0x00aa00, 0xcc6600, 0x990099, 0x009999, 0xffffff]
             }
@@ -248,6 +329,88 @@
                     c.id === this.selectedCityId && 
                     c.owner === this.selectedCityOwner
                 );
+            },
+            techTreeNodes() {
+                if (!this.replayData) return [];
+                const techs = this.replayData.header.dictionary.technologies;
+                const nodes = [];
+                
+                const CELL_W = 220; 
+                const CELL_H = 80;
+                
+                // 1. Получаем список мажорных цивилизаций (для порядка слотов)
+                // Фильтруем: существуют, не варвары, не ГГ
+                const majorPlayers = this.currentPlayers.filter(p => p && !p.isBarbarian && !p.isMinor);
+
+                Object.keys(techs).forEach(key => {
+                    const t = techs[key];
+                    const techID = parseInt(key);
+                    
+                    // 2. Собираем статусы для каждого мажора
+                    const playerStatuses = majorPlayers.map(p => {
+                        let status = 'none'; // 'none', 'researched', 'current'
+                        
+                        // Проверяем данные (p.tech может быть null в ранних версиях логгера)
+                        if (p.tech) {
+                            // А. Уже изучено
+                            if (p.tech.researched && p.tech.researched.includes(techID)) {
+                                status = 'researched';
+                            }
+                            // Б. Изучается прямо сейчас
+                            else if (p.tech.current === techID) {
+                                status = 'current';
+                            }
+                        }
+                        
+                        return {
+                            id: p.id,
+                            color: this.getPlayerColor(p.id),
+                            status: status
+                        };
+                    });
+
+                    nodes.push({
+                        id: techID,
+                        name: t.name,
+                        cost: t.cost,
+                        x: t.gridX * CELL_W, 
+                        y: t.gridY * CELL_H, 
+                        prereqs: t.prereqs,
+                        
+                        // Добавляем массив статусов в узел
+                        playerStatuses: playerStatuses
+                    });
+                });
+                
+                return nodes;
+            },
+        
+            // Связи (Стрелочки)
+            techTreeLinks() {
+                const links = [];
+                const nodesMap = {};
+                this.techTreeNodes.forEach(n => nodesMap[n.id] = n);
+                
+                const BOX_W = 180; // Ширина самой карточки (меньше CELL_W)
+                const BOX_H = 60;  // Высота карточки
+                
+                this.techTreeNodes.forEach(target => {
+                    if (target.prereqs) {
+                        target.prereqs.forEach(parentId => {
+                            const source = nodesMap[parentId];
+                            if (source) {
+                                links.push({
+                                    // Координаты для SVG линии
+                                    x1: source.x + BOX_W, // Выход справа
+                                    y1: source.y + BOX_H/2, // Середина высоты
+                                    x2: target.x,         // Вход слева
+                                    y2: target.y + BOX_H/2
+                                });
+                            }
+                        });
+                    }
+                });
+                return links;
             }
         },
         watch: {

@@ -441,10 +441,8 @@ function ReplayLogger.GetGameDictionaries()
   FillDict(dict.resources, "Resources")
 
   -- ОСОБЫЙ СБОР ДЛЯ ТЕХНОЛОГИЙ (нужна структура для дерева)
-  -- Перезаписываем technologies, чтобы хранить объект, а не просто строку
   dict.technologies = {}
   for row in GameInfo.Technologies() do
-      -- Собираем пререквизиты (стрелочки в дереве)
       local prereqs = {}
       for pr in GameInfo.Technology_PrereqTechs{TechType = row.Type} do
           local pRow = GameInfo.Technologies[pr.PrereqTech]
@@ -453,11 +451,14 @@ function ReplayLogger.GetGameDictionaries()
 
       dict.technologies[tostring(row.ID)] = {
           type = row.Type,
-          name = row.Description, -- Локализованное название (или ключ)
+          -- ВАЖНО: Используем Locale.ConvertTextKey для перевода
+          name = Locale.ConvertTextKey(row.Description), 
           gridX = row.GridX,
           gridY = row.GridY,
           cost = row.Cost,
-          prereqs = prereqs
+          prereqs = prereqs,
+          -- Добавим иконку (обычно это атлас, но пока просто имя файла или индекс)
+          icon = row.PortraitIndex
       }
   end
 
