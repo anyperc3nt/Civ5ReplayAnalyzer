@@ -1,6 +1,5 @@
 -- ============================================================================
--- ReplayLogger.lua v2.0 (Enhanced Edition)
--- Based on InfoAddict logic & Custom Replay Architecture
+-- ReplayLogger.lua
 -- ============================================================================
 
 ReplayLogger = {}
@@ -355,6 +354,26 @@ local json = (function()
   return json
 end)()
 -- ============================================================================
+-- END DKJSON LIBRARY
+-- ============================================================================
+
+-- Глобальный кэш состояния тайлов, чтобы слать только изменения
+ReplayLogger.MapCache = {} 
+
+function ReplayLogger.InitMapCache()
+    local numPlots = Map.GetNumPlots()
+    for i = 0, numPlots - 1 do
+        local plot = Map.GetPlotByIndex(i)
+        ReplayLogger.MapCache[i] = {
+            f = plot:GetFeatureType(),
+            i = plot:GetImprovementType(),
+            r = plot:GetResourceType(),
+            -- Route (Дорога) тоже полезна
+            rt = plot:GetRouteType(),
+            p = plot:IsImprovementPillaged() -- Разграблено ли?
+        }
+    end
+end
 
 -- === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
 
@@ -402,26 +421,47 @@ function ReplayLogger.GetGameSignature()
 end
 
 function ReplayLogger.GetGameDictionaries()
-    local dict = {
-        civilizations = {}, units = {}, buildings = {}, 
-        technologies = {}, policies = {},
-        terrains = {}, features = {}, improvements = {}, resources = {}
-    }
-    
-    local function FillDict(dest, tableName)
-        for row in GameInfo[tableName]() do dest[tostring(row.ID)] = row.Type end
-    end
+  local dict = {
+      civilizations = {}, units = {}, buildings = {}, 
+      technologies = {}, policies = {},
+      terrains = {}, features = {}, improvements = {}, resources = {}
+  }
+  
+  local function FillDict(dest, tableName)
+      for row in GameInfo[tableName]() do dest[tostring(row.ID)] = row.Type end
+  end
 
-    FillDict(dict.civilizations, "Civilizations")
-    FillDict(dict.units, "Units")
-    FillDict(dict.buildings, "Buildings")
-    FillDict(dict.technologies, "Technologies")
-    FillDict(dict.policies, "Policies")
-    FillDict(dict.terrains, "Terrains")
-    FillDict(dict.features, "Features")
-    FillDict(dict.improvements, "Improvements")
-    FillDict(dict.resources, "Resources")
-    return dict
+  FillDict(dict.civilizations, "Civilizations")
+  FillDict(dict.units, "Units")
+  FillDict(dict.buildings, "Buildings")
+  FillDict(dict.policies, "Policies")
+  FillDict(dict.terrains, "Terrains")
+  FillDict(dict.features, "Features")
+  FillDict(dict.improvements, "Improvements")
+  FillDict(dict.resources, "Resources")
+
+  -- ОСОБЫЙ СБОР ДЛЯ ТЕХНОЛОГИЙ (нужна структура для дерева)
+  -- Перезаписываем technologies, чтобы хранить объект, а не просто строку
+  dict.technologies = {}
+  for row in GameInfo.Technologies() do
+      -- Собираем пререквизиты (стрелочки в дереве)
+      local prereqs = {}
+      for pr in GameInfo.Technology_PrereqTechs{TechType = row.Type} do
+          local pRow = GameInfo.Technologies[pr.PrereqTech]
+          if pRow then table.insert(prereqs, pRow.ID) end
+      end
+
+      dict.technologies[tostring(row.ID)] = {
+          type = row.Type,
+          name = row.Description, -- Локализованное название (или ключ)
+          gridX = row.GridX,
+          gridY = row.GridY,
+          cost = row.Cost,
+          prereqs = prereqs
+      }
+  end
+
+  return dict
 end
 
 function ReplayLogger.GetStaticMap()
@@ -460,7 +500,7 @@ function ReplayLogger.SendGameHeader()
         dictionary = ReplayLogger.GetGameDictionaries(),
         staticMap = ReplayLogger.GetStaticMap()
     }
-
+    ReplayLogger.InitMapCache()
     local jsonString = json.encode(header)
     ReplayLogger.PrintBigData("CIV5_DATA_JSON::", jsonString)
     ReplayLogger.isHeaderSent = true
@@ -479,109 +519,115 @@ function ReplayLogger.GetTurnSnapshot(iTurn)
       players = {},
       cities = {},
       units = {},
-      -- Новые слои карты
-      territory = {}, -- Массив ID владельцев клеток
-      mapObjects = {} -- Руины и лагеря варваров
+      territory = {},
+      mapChanges = {}
   }
 
-  -- 1. СКАНИРОВАНИЕ КАРТЫ (Владения, Руины, Лагеря)
-  -- Проходим по всем тайлам. Это быстро.
-  local numPlots = Map.GetNumPlots()
-  
-  -- ID улучшений для поиска (кэшируем для скорости)
-  local impRuins = GameInfo.Improvements["IMPROVEMENT_GOODY_HUT"].ID
-  local impBarbCamp = GameInfo.Improvements["IMPROVEMENT_BARBARIAN_CAMP"].ID
-  
-  for i = 0, numPlots - 1 do
-      local plot = Map.GetPlotByIndex(i)
-      
-      -- А. Владелец тайла (для границ)
-      -- -1 если ничей, иначе ID игрока
-      snapshot.territory[i + 1] = plot:GetOwner()
-      
-      -- Б. Объекты (Руины, Лагеря)
-      local imp = plot:GetImprovementType()
-      if imp == impRuins then
-          table.insert(snapshot.mapObjects, { type = "RUIN", x = plot:GetX(), y = plot:GetY() })
-      elseif imp == impBarbCamp then
-          table.insert(snapshot.mapObjects, { type = "CAMP", x = plot:GetX(), y = plot:GetY() })
-      end
-  end
+    -- 1. СКАНИРОВАНИЕ КАРТЫ (оставил без изменений, код был верный)
+    local numPlots = Map.GetNumPlots()
+    for i = 0, numPlots - 1 do
+        local plot = Map.GetPlotByIndex(i)
+        snapshot.territory[i + 1] = plot:GetOwner()
+        
+        local cache = ReplayLogger.MapCache[i]
+        local currentF = plot:GetFeatureType()
+        local currentI = plot:GetImprovementType()
+        local currentR = plot:GetResourceType()
+        local currentRt = plot:GetRouteType()
+        local currentP = plot:IsImprovementPillaged()
+        
+        if not cache or cache.f ~= currentF or cache.i ~= currentI or 
+           cache.r ~= currentR or cache.rt ~= currentRt or cache.p ~= currentP then
+           
+            table.insert(snapshot.mapChanges, {
+                id = i, f = currentF, i = currentI, r = currentR, rt = currentRt, p = currentP
+            })
+            ReplayLogger.MapCache[i] = {
+                f = currentF, i = currentI, r = currentR, rt = currentRt, p = currentP
+            }
+        end
+    end
 
-  -- 2. СКАНИРОВАНИЕ ИГРОКОВ (Включая ГГ и Варваров)
-  -- MAX_CIV_PLAYERS включает мажоров, ГГ и варваров
-  for i = 0, GameDefines.MAX_CIV_PLAYERS - 1 do
+    -- 2. СКАНИРОВАНИЕ ИГРОКОВ (Исправлено для Варваров)
+    -- В Civ 5 ID игроков идут от 0 до 63 (MAX_CIV_PLAYERS обычно 64)
+    -- ID 63 - Всегда Варвары
+    for i = 0, GameDefines.MAX_CIV_PLAYERS do 
       local p = Players[i]
       
-      -- Проверка: Игрок существует, когда-либо жил.
-      -- Для Варваров (обычно ID 63) IsEverAlive может быть false до спавна, поэтому проверяем ID
-      if p and (p:IsEverAlive() or i == GameDefines.MAX_CIV_PLAYERS - 1) then
-          local pTeam = Teams[p:GetTeam()]
-          local isMinor = p:IsMinorCiv()
-          local isBarbarian = p:IsBarbarian()
+      -- Проверка: Игрок существует И (Жив когда-либо ИЛИ это Варвары)
+      -- Варвары всегда "Alive", но IsEverAlive иногда шалит до спавна первого лагеря
+      if p and (p:IsEverAlive() or i == 63) then
           
-          -- Безопасные вызовы
-          local cultPerTurn = (p.GetTotalJONSCulturePerTurn and p:GetTotalJONSCulturePerTurn()) or 0
-          local tourismVal = (p.GetTourism and p:GetTourism()) or 0
+          -- Доп. проверка: если это не варвары и не ГГ, и статус "мертв" - пропускаем,
+          -- если не хотим показывать трупы в списке (хотя для истории может быть полезно оставить)
+          if p:IsAlive() or i == 63 then 
+              
+              local isMinor = p:IsMinorCiv()
+              local isBarbarian = (i == 63) -- Надежнее проверять по ID
+              
+              local pData = {
+                  id = i,
+                  name = isBarbarian and "Barbarians" or p:GetName(),
+                  civName = isBarbarian and "Barbarians" or p:GetCivilizationDescription(),
+                  isAlive = p:IsAlive(),
+                  isMinor = isMinor,
+                  isBarbarian = isBarbarian,
+                  gold = p:GetGold(),
+                  score = p:GetScore(),
+                  -- Инициализируем пустыми, чтобы JSON был компактнее
+                  tech = nil,
+                  policies = nil
+              }
+              
+              -- Статистику собираем ТОЛЬКО для Мажоров (не ГГ, не Варвары)
+              if not isMinor and not isBarbarian then
+                  pData.goldPerTurn = p:CalculateGoldRate()
+                  pData.science = p:GetScience()
+                  pData.culture = (p.GetTotalJONSCulturePerTurn and p:GetTotalJONSCulturePerTurn()) or 0
+                  pData.totalCulture = p:GetJONSCulture()
+                  pData.happiness = p:GetExcessHappiness()
+                  pData.faith = p:GetFaith()
+                  pData.tourism = (p.GetTourism and p:GetTourism()) or 0
+                  
+                  -- Военная мощь (варвары её имеют, но считаем только для игроков пока)
+                  pData.military = p:GetMilitaryMight()
 
-          -- Базовая статистика
-          local pData = {
-              id = i,
-              isAlive = p:IsAlive(),
-              isMinor = isMinor,      -- Флаг для фронтенда: это ГГ
-              isBarbarian = isBarbarian, -- Флаг для фронтенда: это варвары
-              
-              gold = p:GetGold(),
-              score = p:GetScore(),
-              
-              -- Технологии и Политики собираем ТОЛЬКО для мажоров (ГГ не учат науку так же)
-              tech = nil,
-              policies = nil
-          }
-          
-          -- Расширенная статистика только для Полноценных Цивилизаций (не Варвары, не ГГ)
-          -- Хотя ГГ имеют золото и юнитов, им не нужна наука в реплее
-          if not isMinor and not isBarbarian then
-              pData.goldPerTurn = p:CalculateGoldRate()
-              pData.science = p:GetScience()
-              pData.culture = cultPerTurn
-              pData.totalCulture = p:GetJONSCulture()
-              pData.happiness = p:GetExcessHappiness()
-              pData.military = p:GetMilitaryMight()
-              pData.numCities = p:GetNumCities()
-              pData.faith = p:GetFaith()
-              pData.tourism = tourismVal
-              
-              -- ТЕХНОЛОГИИ (Дерево)
-              pData.tech = { current = -1, progress = 0, needed = 0, researched = {} }
-              
-              local currentTech = p:GetCurrentResearch()
-              if currentTech ~= -1 then
-                  pData.tech.current = currentTech
-                  pData.tech.progress = p:GetResearchProgress(currentTech)
-                  pData.tech.needed = p:GetResearchCost(currentTech)
-              end
-              
-              for tech in GameInfo.Technologies() do
-                  if pTeam:IsHasTech(tech.ID) then
-                      table.insert(pData.tech.researched, tech.ID)
+                  -- ТЕХНОЛОГИИ
+                  local pTeam = Teams[p:GetTeam()]
+                  pData.tech = { current = -1, progress = 0, researched = {} }
+                  
+                  local currentTech = p:GetCurrentResearch()
+                  if currentTech ~= -1 then
+                      pData.tech.current = currentTech
+                      pData.tech.progress = p:GetResearchProgress(currentTech)
                   end
-              end
-
-              -- ПОЛИТИКИ
-              pData.policies = {}
-              for policy in GameInfo.Policies() do
-                  if p:HasPolicy(policy.ID) then
-                      table.insert(pData.policies, policy.ID)
+                  
+                  -- Оптимизация: слать только ID изученных
+                  -- (В идеале слать только дельту, но пока шлем полный список)
+                  local researched = {}
+                  for tech in GameInfo.Technologies() do
+                      if pTeam:IsHasTech(tech.ID) then
+                          table.insert(researched, tech.ID)
+                      end
                   end
-              end
-          end
+                  pData.tech.researched = researched
 
-          table.insert(snapshot.players, pData)
-          
-          -- ЮНИТЫ И ГОРОДА (Если жив)
-          if p:IsAlive() then
-              -- Юниты
+                  -- ПОЛИТИКИ
+                  local policies = {}
+                  for policy in GameInfo.Policies() do
+                      if p:HasPolicy(policy.ID) then
+                          table.insert(policies, policy.ID)
+                      end
+                  end
+                  pData.policies = policies
+              end
+
+              -- Для варваров можно добавить специфичные поля, если нужно, 
+              -- но пока оставляем базовый name/id/gold
+              
+              table.insert(snapshot.players, pData)
+              
+              -- ЮНИТЫ (Варвары имеют юнитов!)
               for unit in p:Units() do
                   table.insert(snapshot.units, {
                       id = unit:GetID(),
@@ -590,19 +636,13 @@ function ReplayLogger.GetTurnSnapshot(iTurn)
                       x = unit:GetX(), y = unit:GetY(),
                       hp = unit:GetCurrHitPoints(),
                       moves = unit:GetMoves()
+                      -- promotion? level?
                   })
               end
 
-              -- Города
+              -- ГОРОДА (Варвары могут захватывать города, хотя редко)
               for city in p:Cities() do
-                  local buildings = {}
-                  for b in GameInfo.Buildings() do
-                      if city:IsHasBuilding(b.ID) then
-                          table.insert(buildings, b.ID)
-                      end
-                  end
-                  
-                  -- ДЕТАЛЬНЫЕ ДОХОДЫ ГОРОДА (YIELDS)
+                  -- Код сбора городов такой же
                   local yields = {
                       food = city:GetYieldRate(YieldTypes.YIELD_FOOD),
                       prod = city:GetYieldRate(YieldTypes.YIELD_PRODUCTION),
@@ -611,6 +651,24 @@ function ReplayLogger.GetTurnSnapshot(iTurn)
                       cult = (city.GetJONSCulturePerTurn and city:GetJONSCulturePerTurn()) or 0,
                       faith = (city.GetFaithPerTurn and city:GetFaithPerTurn()) or 0
                   }
+                  local buildings = {}
+                  for b in GameInfo.Buildings() do
+                      if city:IsHasBuilding(b.ID) then
+                          table.insert(buildings, b.ID)
+                      end
+                  end
+
+                  -- 1. СПЕЦИАЛИСТЫ
+                  local specialists = {}
+                  -- Проходим по всем зданиям/слотам, это сложно в Lua Civ5 без итератора.
+                  -- Проще получить общее количество специалистов по типам, если игра позволяет.
+                  -- В Civ5 API: city:GetSpecialistCount(SpecialistType)
+                  for spec in GameInfo.Specialists() do
+                      local count = city:GetSpecialistCount(spec.ID)
+                      if count > 0 then
+                          table.insert(specialists, { id = spec.ID, count = count })
+                      end
+                  end
 
                   table.insert(snapshot.cities, {
                       id = city:GetID(),
@@ -620,14 +678,25 @@ function ReplayLogger.GetTurnSnapshot(iTurn)
                       pop = city:GetPopulation(),
                       hp = city:GetMaxHitPoints() - city:GetDamage(),
                       buildings = buildings,
-                      yields = yields, -- <--- Новое поле
+                      yields = yields,
+                      
+                      -- ПРОИЗВОДСТВО
+                      -- GetProductionNameKey работает для всех, но для AI может возвращать Generic данные.
+                      -- Убедись, что тестируешь с InGame контекстом.
                       prodItem = city:GetProductionNameKey(), 
-                      prodTurns = city:GetProductionTurnsLeft()
+                      prodTurns = city:GetProductionTurnsLeft(),
+                      
+                      worked = worked,
+                      
+                      -- ПРИОРИТЕТЫ (Focus)
+                      -- 0=Total, 1=Gold, 2=Prod, ... (см. GameInfo.CitySpecializations)
+                      focus = city:GetFocusType(),
+                      specialists = specialists -- Новое поле
                   })
               end
           end
       end
-  end
+    end
 
   return snapshot
 end

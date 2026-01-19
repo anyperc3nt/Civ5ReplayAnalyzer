@@ -74,20 +74,40 @@
         </div>
 
         <div class="side-panel interactive">
-            <div style="padding: 10px; background: #333; font-weight: bold;">Игроки</div>
-            <div v-for="player in currentPlayers" :key="player.id" class="stat-row">
-                <div style="display: flex; align-items: center; gap: 5px;">
-                    <div :style="{width:'10px', height:'10px', borderRadius:'50%', background: getPlayerColor(player.id)}"></div>
-                    Civ {{ player.id }}
+            <div style="padding: 10px; background: #333; font-weight: bold; border-bottom: 1px solid #555;">
+                Игроки
+            </div>
+            
+            <!-- СПИСОК ИГРОКОВ -->
+            <div v-for="player in visiblePlayers" :key="player.id" class="stat-row">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <!-- Цветной кружок -->
+                    <div :style="{
+                        width:'14px', height:'14px', 
+                        borderRadius:'50%', 
+                        background: getPlayerColor(player.id),
+                        border: '1px solid rgba(255,255,255,0.3)'
+                    }"></div>
+                    
+                    <!-- Имя + Статус -->
+                    <div style="display: flex; flex-direction: column;">
+                        <span style="font-weight: bold; font-size: 0.95em;">
+                            {{ getCivilizationName(player.id) }}
+                        </span>
+                        <span style="font-size: 0.75em; color: #aaa;" v-if="!player.isAlive">ELIMINATED</span>
+                    </div>
                 </div>
-                <div>
-                    <span style="color: gold;">{{ player.gold }}</span> | 
-                    <span style="color: cyan;">+{{ player.science }}</span>
+                
+                <!-- Статы (в столбик или строку) -->
+                <div style="text-align: right; font-size: 0.85em; display: flex; flex-direction: column;">
+                    <span style="color: gold;">💰 {{ Math.floor(player.gold) }} <small>({{ player.goldPerTurn > 0 ? '+' : ''}}{{ player.goldPerTurn }})</small></span>
+                    <span style="color: cyan;">🧪 {{ player.science }}</span>
+                    <span style="color: #d0f;">🎵 {{ Math.floor(player.totalCulture) }}</span>
                 </div>
             </div>
 
             <div style="padding: 10px; margin-top: 10px; background: #333; font-weight: bold;">Города</div>
-            <div v-for="city in currentCities" class="stat-row" @click="focusCity(city)" style="cursor: pointer;">
+            <div v-for="city in currentCities" class="stat-row" @click="selectCity(city.id, city.owner)" style="cursor: pointer;">
                 <b>{{ city.name }}</b>
                 <span>Pop: {{ city.pop }}</span>
             </div>
@@ -164,6 +184,7 @@
                 maxTurns: 0,
                 replayData: null,
                 selectedCityId: null, // Храним ID, а не объект!
+                selectedCityOwner: null, // Добавляем поле владельца
                 
                 // Режимы иконок: 'default', 'military', 'resource', 'civilian', 'misc'
                 iconMode: 'default',
@@ -174,11 +195,21 @@
         computed: {
             currentTurnData() { return this.replayData?.turns[this.currentTurn]; },
             currentPlayers() { return this.currentTurnData?.players || []; },
+
+                // ОТФИЛЬТРОВАННЫЙ СПИСОК для отображения в панели
+            visiblePlayers() {
+                // 1. Проверяем, что массив есть
+                if (!this.currentPlayers) return [];
+                // 2. Фильтруем: Игрок существует И это не Варвар
+                return this.currentPlayers.filter(p => p && !p.isBarbarian);
+            },
             
-            // Динамически ищем город в текущем ходу по ID
             selectedCity() {
                 if (this.selectedCityId === null || !this.currentTurnData) return null;
-                return this.currentTurnData.cities.find(c => c.id === this.selectedCityId);
+                return this.currentTurnData.cities.find(c => 
+                    c.id === this.selectedCityId && 
+                    c.owner === this.selectedCityOwner
+                );
             }
         },
         watch: {
@@ -212,17 +243,52 @@
                 if (id >= this.playerColors.length) return '#888888';
                 return '#' + this.playerColors[id].toString(16).padStart(6, '0');
             },
-            // Вызывается из Pixi при клике
-            selectCity(cityId) {
+            selectCity(cityId, ownerId) {
                 this.selectedCityId = cityId;
+                this.selectedCityOwner = ownerId;
+                
+                // Подсветка (если реализована)
+                if (this.selectedCity && window.highlightWorkedPlots) {
+                    const ownerColor = parseInt(this.getPlayerColor(this.selectedCity.owner).replace('#', ''), 16);
+                    window.highlightWorkedPlots(this.selectedCity.worked, ownerColor);
+                }
             },
             closeCity() {
                 this.selectedCityId = null;
+                this.selectedCityOwner = null;
+                if (window.highlightWorkedPlots) window.highlightWorkedPlots([]);
             },
             getBuildingName(id) {
                 if (!this.replayData.header.dictionary.buildings) return id;
                 let name = this.replayData.header.dictionary.buildings[id] || "Unknown";
                 return name.replace("BUILDING_", "").replace(/_/g, " ");
+            },
+            getCivilizationName(playerId) {
+                if (playerId === 63) return "Barbarians";
+                
+                // Ищем игрока в текущем ходе
+                const p = this.currentPlayers.find(pl => pl.id === playerId);
+                if (!p) return `Player ${playerId}`;
+
+                // Если есть civName (Description), используем его
+                if (p.civName) return p.civName;
+
+                // Фолбек на словарь (если вдруг civName пустой, берем Type из словаря)
+                // Но p.civName (из Lua p:GetCivilizationDescription()) обычно надежнее
+                return `Civ ${playerId}`;
+            },
+            getFocusName(focusId) {
+                // ID соответствуют таблице CitySpecializations в БД Civ 5
+                const modes = {
+                    0: "None", // NO_CITY_SPECIALIZATION
+                    1: "Food", // CITY_SPECIALIZATION_FOOD
+                    2: "Production", // CITY_SPECIALIZATION_PRODUCTION
+                    3: "Gold", // CITY_SPECIALIZATION_GOLD
+                    4: "Science", // CITY_SPECIALIZATION_SCIENCE
+                    5: "Culture", // CITY_SPECIALIZATION_CULTURE (иногда другие ID, проверь опытным путем)
+                    6: "Great People" 
+                };
+                return modes[focusId] || "Default";
             }
         }
     }).mount('#app');

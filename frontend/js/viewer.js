@@ -6,10 +6,15 @@
 let app, mapContainer;
 let currentIconMode = 'default'; // 'default', 'military', 'civilian', 'resource', 'misc'
 
+// Кэш состояний карты: Map<TurnIndex, TileStateArray>
+let mapStateCache = new Map();
+const CACHE_INTERVAL = 15; // Сохраняем состояние каждые 25 ходов
+
 // Слои (Z-index определяется порядком добавления)
 let baseTerrainLayer, territoryLayer, gridLayer, featuresLayer, hillsLayer; 
 let citiesLayer;
-let iconLayerRes, iconLayerMisc, iconLayerCiv, iconLayerMilitary; // Слои иконок
+let highlightLayer;
+let iconLayerRes, iconLayerCiv, iconLayerImprovements, iconLayerMilitary; // Слои иконок
 
 let staticMapData = null;
 let turnsData = null;
@@ -43,7 +48,96 @@ unitColorFilter.matrix = [
     0, 0, 0, 1, 0  // Alpha = Alpha (без изменений)
 ];
 
+// Новая функция для получения состояния
+function getMapStateAtTurn(targetTurnIndex) {
+    // 1. Определяем ближайшую точку старта (0 или кэшированный ход)
+    // Ищем ближайший множитель CACHE_INTERVAL, который меньше или равен targetTurnIndex
+    let startTurnIndex = 0;
+    let currentState = {};
+
+    // Пытаемся найти сохраненный стейт
+    // Идем назад с шагом интервала, пока не найдем кэш или не дойдем до 0
+    let checkIndex = Math.floor(targetTurnIndex / CACHE_INTERVAL) * CACHE_INTERVAL;
+    
+    while (checkIndex >= 0) {
+        if (mapStateCache.has(checkIndex)) {
+            startTurnIndex = checkIndex;
+            // ГЛУБОКАЯ КОПИЯ, чтобы не испортить кэш последующими изменениями
+            currentState = JSON.parse(JSON.stringify(mapStateCache.get(checkIndex)));
+            break;
+        }
+        checkIndex -= CACHE_INTERVAL;
+    }
+
+    // Если кэша нет (или старт с 0), инициализируем из статики (Header)
+    if (Object.keys(currentState).length === 0) {
+        staticMapData.tiles.forEach((t, idx) => {
+            currentState[idx] = { f: t.f, i: t.i || -1, r: t.r };
+        });
+    }
+
+    // 2. Накатываем изменения от startTurnIndex до targetTurnIndex
+    for (let i = startTurnIndex; i <= targetTurnIndex; i++) {
+        const tData = turnsData[i];
+        
+        // Применяем изменения
+        if (tData && tData.mapChanges) {
+            tData.mapChanges.forEach(change => {
+                const s = currentState[change.id];
+                if (s) {
+                    if (change.f !== undefined) s.f = change.f;
+                    if (change.i !== undefined) s.i = change.i;
+                    if (change.r !== undefined) s.r = change.r;
+                }
+            });
+        }
+
+        // 3. Попутно сохраняем в кэш, если попали на кратную точку и её еще нет
+        if (i > 0 && i % CACHE_INTERVAL === 0 && !mapStateCache.has(i)) {
+            mapStateCache.set(i, JSON.parse(JSON.stringify(currentState)));
+            console.log(`[Cache] Created map state snapshot for turn index ${i}`);
+        }
+    }
+
+    return currentState;
+}
+
+// Функция подсветки обработки тайлов
+window.highlightWorkedPlots = function(plotIndices, colorInt) {
+    highlightLayer.removeChildren();
+    
+    if (!plotIndices || plotIndices.length === 0) return;
+
+    const g = new PIXI.Graphics();
+    g.beginFill(colorInt, 0.4); // Полупрозрачная заливка
+    g.lineStyle(2, 0xffffff, 0.6); // Белая обводка
+
+    plotIndices.forEach(idx => {
+        const q = idx % staticMapData.width;
+        const r = Math.floor(idx / staticMapData.width);
+        const pos = getHexPosition(q, r);
+
+        // Рисуем гекс
+        const path = [];
+        for (let i = 0; i < 6; i++) {
+            const angle = (Math.PI / 180) * (60 * i + 30);
+            path.push(pos.x + HEX_RADIUS * Math.cos(angle)); 
+            path.push(pos.y + HEX_RADIUS * Math.sin(angle));
+        }
+        g.drawPolygon(path);
+        
+        // Опционально: иконку человечка/головы (Citizen) в центре
+        // const head = getSpriteFromAsset('CITIZEN_ICON', 16, 16); ...
+    });
+    g.endFill();
+    highlightLayer.addChild(g);
+};
+
+// При снятии выделения (closeCity) вызываем window.highlightWorkedPlots([], 0)
+
 // --- ИНИЦИАЛИЗАЦИЯ ---
+
+let currentMapState = []; // Массив тайлов (актуальное состояние)
 
 window.initPixiApp = function(data) {
     globalReplayData = data;
@@ -51,6 +145,9 @@ window.initPixiApp = function(data) {
     turnsData = data.turns;
 
     const container = document.getElementById('pixi-container');
+
+    // Инициализируем состояние копией статики
+    currentMapState = JSON.parse(JSON.stringify(staticMapData.tiles));
     
     // Удаляем старый канвас если был (для HMR)
     if (container.firstChild) container.removeChild(container.firstChild);
@@ -72,27 +169,30 @@ window.initPixiApp = function(data) {
     baseTerrainLayer = new PIXI.Container();    // 1. Земля
     territoryLayer = new PIXI.Container();      // 2. Границы (Линии)
     gridLayer = new PIXI.Container();           // 3. Сетка
+    highlightLayer = new PIXI.Container(); //обработка тайлов жителями
+    improvementsLayer = new PIXI.Container(); // Фермы, Шахты
     featuresLayer = new PIXI.Container();       // 4. Леса/Джунгли
     hillsLayer = new PIXI.Container();          // 4. Холмы и Горы (Поверх лесов)
     citiesLayer = new PIXI.Container();         // 5. Города (подложка)
     
     // 6. Иконки (поверх городов)
     iconLayerRes = new PIXI.Container();
-    iconLayerMisc = new PIXI.Container();
     iconLayerCiv = new PIXI.Container();
+    iconLayerImprovements = new PIXI.Container();
     iconLayerMilitary = new PIXI.Container();
 
     // Добавляем в контейнер
     mapContainer.addChild(baseTerrainLayer);
     mapContainer.addChild(territoryLayer);
     mapContainer.addChild(gridLayer);
+    mapContainer.addChild(highlightLayer); //обработка тайлов жителями
     mapContainer.addChild(featuresLayer);
     mapContainer.addChild(hillsLayer);
     mapContainer.addChild(citiesLayer);
     
     mapContainer.addChild(iconLayerRes);
-    mapContainer.addChild(iconLayerMisc);
     mapContainer.addChild(iconLayerCiv);
+    mapContainer.addChild(iconLayerImprovements);
     mapContainer.addChild(iconLayerMilitary);
 
     // Центрируем камеру
@@ -241,13 +341,39 @@ window.updatePixiTurn = function(turnIndex) {
     // Очистка динамических слоев
     territoryLayer.removeChildren();
     iconLayerRes.removeChildren();
-    iconLayerMisc.removeChildren();
     iconLayerCiv.removeChildren();
+    iconLayerImprovements.removeChildren();
     iconLayerMilitary.removeChildren();
     citiesLayer.removeChildren();
 
+    featuresLayer.removeChildren();
+
     const turn = turnsData[turnIndex];
     if (!turn) return;
+
+    // Получаем актуальное состояние тайлов (ландшафт, ресурсы, улучшения) через умный кэш
+    const tileState = getMapStateAtTurn(turnIndex);
+
+    // === 2. ОТРИСОВКА ФИЧ (ЛЕСА) ===
+    // Теперь мы рисуем их каждый ход заново, так как лес могут вырубить
+    Object.keys(tileState).forEach(idxStr => {
+        const idx = parseInt(idxStr);
+        const state = tileState[idx];
+        
+        // Рисуем Лес/Джунгли
+        if (state.f >= 0) {
+            const fName = globalReplayData.header.dictionary.features[state.f];
+            const q = idx % staticMapData.width;
+            const r = Math.floor(idx / staticMapData.width);
+            const pos = getHexPosition(q, r);
+            
+            const fSprite = getSpriteFromAsset(fName, HEX_WIDTH, HEX_HEIGHT);
+            if (fSprite) {
+                fSprite.x = pos.x; fSprite.y = pos.y;
+                featuresLayer.addChild(fSprite);
+            }
+        }
+    });
 
     // === 1. ГРАНИЦЫ (OUTLINE) ===
     drawTerritoryBorders(turn.territory);
@@ -288,7 +414,7 @@ window.updatePixiTurn = function(turnIndex) {
         box.eventMode = 'static';
         box.cursor = 'pointer';
         box.on('pointerdown', () => {
-            if (window.appVue) window.appVue.selectCity(city.id); // Передаем ID!
+            if (window.appVue) window.appVue.selectCity(city.id, city.owner); // Передаем ID!
         });
 
         g.addChild(bg);
@@ -301,27 +427,57 @@ window.updatePixiTurn = function(turnIndex) {
     // Собираем объекты по тайлам
     const tileObjects = {}; // "x,y" -> { mil:[], civ:[], res:[], misc:[] }
 
-    // А. Ресурсы
-    staticMapData.tiles.forEach((t, i) => {
-        if (t.r >= 0) {
-            const key = getTileKey(t.x !== undefined ? t.x : i % staticMapData.width, t.y !== undefined ? t.y : Math.floor(i / staticMapData.width));
-            if (!tileObjects[key]) tileObjects[key] = { mil:[], civ:[], res:[], misc:[] };
-            
-            const rName = globalReplayData.header.dictionary.resources[t.r];
+    // А. Ресурсы (из tileState!)
+    Object.keys(tileState).forEach(idxStr => {
+        const idx = parseInt(idxStr);
+        const state = tileState[idx];
+        const q = idx % staticMapData.width;
+        const r = Math.floor(idx / staticMapData.width);
+        const key = getTileKey(q, r);
+        
+        if (!tileObjects[key]) tileObjects[key] = { mil:[], civ:[], res:[], imp:[] };
+        
+        // Ресурс
+        if (state.r >= 0) {
+            const rName = globalReplayData.header.dictionary.resources[state.r];
             tileObjects[key].res.push({ name: rName });
+        }
+        
+        // Улучшение (Ферма, Шахта)
+        if (state.i >= 0) {
+            const iName = globalReplayData.header.dictionary.improvements[state.i];
+            // Игнорируем "IMPROVEMENT_BARBARIAN_CAMP" и "RUINS" здесь, 
+            // так как они приходят отдельно в mapObjects? 
+            // НЕТ! В новом Lua мы НЕ шлем mapObjects отдельно, мы шлем их как улучшения тайла?
+            // А, стоп. В Lua v2.0 mapObjects (Camp/Ruin) собирались отдельно.
+            // Но теперь мы добавили 'mapChanges' с полем 'i' (Improvement).
+            // Лагерь варваров - это тоже Improvement. 
+            // Если Lua шлет Improvement ID, то мы можем рисовать его отсюда.
+            
+            // Если имя валидное - добавляем
+            if (iName) tileObjects[key].imp.push({ name: iName });
         }
     });
 
-    // Б. Руины / Лагеря / Древности
+    // Б. Руины / Лагеря (Legacy mapObjects или дубли?)
+    // Если в Lua мы теперь шлем всё через mapChanges (Improvement), то блок mapObjects можно убрать,
+    // ЧТОБЫ НЕ БЫЛО ДУБЛЕЙ.
+    // Но Руины (Goody Huts) иногда не считаются Improvement'ом в базе, а "спец объектом".
+    // Проверь: если mapObjects приходят - добавляй их.
     if (turn.mapObjects) {
         turn.mapObjects.forEach(obj => {
             const key = getTileKey(obj.x, obj.y);
-            if (!tileObjects[key]) tileObjects[key] = { mil:[], civ:[], res:[], misc:[] };
+            if (!tileObjects[key]) tileObjects[key] = { mil:[], civ:[], res:[], imp:[] };
             
-            let name = "UNKNOWN";
+            let name = null;
             if (obj.type === "RUIN") name = "IMPROVEMENT_GOODY_HUT";
             if (obj.type === "CAMP") name = "IMPROVEMENT_BARBARIAN_CAMP";
-            tileObjects[key].misc.push({ name: name });
+            
+            // Проверка на дубликаты (если уже есть такое улучшение из tileState)
+            const exists = tileObjects[key].imp.some(x => x.name === name);
+            if (name && !exists) {
+                tileObjects[key].imp.push({ name: name });
+            }
         });
     }
 
@@ -338,13 +494,14 @@ window.updatePixiTurn = function(turnIndex) {
         else tileObjects[key].mil.push(unitObj);
     });
 
-    // Отрисовка по режимам
+    // === 4. ОТРИСОВКА ИКОНОК (Updated Layout) ===
     Object.keys(tileObjects).forEach(key => {
         const [qx, ry] = key.split(',').map(Number);
         const pos = getHexPosition(qx, ry);
         const objs = tileObjects[key];
 
-        const drawIcon = (obj, layer, dx, dy, scale, showBg, isUnit = false) => {
+        // Функция отрисовки (с фильтром для Варваров)
+        const drawIcon = (obj, layer, dx, dy, scale, showBg, isUnit) => {
             const sprite = getSpriteFromAsset(obj.name, HEX_WIDTH, HEX_WIDTH);
             if (!sprite) return;
             
@@ -353,7 +510,6 @@ window.updatePixiTurn = function(turnIndex) {
             cont.y = pos.y + dy;
             cont.scale.set(scale);
 
-            // Фон (Кружок команды)
             if (showBg && obj.owner !== undefined) {
                 const bg = new PIXI.Graphics();
                 bg.beginFill(getPlayerColorInt(obj.owner));
@@ -361,11 +517,9 @@ window.updatePixiTurn = function(turnIndex) {
                 cont.addChild(bg);
             }
 
-            // ПРИМЕНЯЕМ ФИЛЬТР ТОЛЬКО К СПРАЙТУ ЮНИТА
-            if (isUnit) {
+            // Фильтр: Если юнит И НЕ Варвар (ID 63)
+            if (isUnit && obj.owner !== 63) {
                 sprite.filters = [unitColorFilter];
-                // Часто иконки в ассетах чуть меньше холста, можно их чуть уменьшить
-                // sprite.scale.set(0.9); 
             }
 
             cont.addChild(sprite);
@@ -374,39 +528,28 @@ window.updatePixiTurn = function(turnIndex) {
 
         const MODE = currentIconMode;
         
-        // --- PRIORITY MODES (Один большой по центру) ---
-        if (MODE === 'military' && objs.mil.length > 0) {
-            // isUnit = true
-            drawIcon(objs.mil[0], iconLayerMilitary, 0, 0, 0.7, true, true);
-        } 
-        else if (MODE === 'civilian' && objs.civ.length > 0) {
-            // isUnit = true
-            drawIcon(objs.civ[0], iconLayerCiv, 0, 0, 0.7, true, true);
-        }
-        else if (MODE === 'resource' && objs.res.length > 0) {
-            // isUnit = false
-            drawIcon(objs.res[0], iconLayerRes, 0, 0, 1.05, false, false);
-        }
-        else if (MODE === 'misc' && objs.misc.length > 0) {
-            // isUnit = false (Руины не фильтруем, они цветные)
-            drawIcon(objs.misc[0], iconLayerMisc, 0, 0, 1.05, false, false);
-        }
-        // --- DEFAULT MODE (4 Квадранта) ---
+        // Priority Modes
+        if (MODE === 'military' && objs.mil.length > 0) drawIcon(objs.mil[0], iconLayerMilitary, 0, 0, 0.7, true, true);
+        else if (MODE === 'civilian' && objs.civ.length > 0) drawIcon(objs.civ[0], iconLayerCiv, 0, 0, 0.7, true, true);
+        else if (MODE === 'resource' && objs.res.length > 0) drawIcon(objs.res[0], iconLayerRes, 0, 0, 1.05, false, false);
+        else if (MODE === 'improvements' && objs.imp.length > 0) drawIcon(objs.imp[0], iconLayerImprovements, 0, 0, 1.05, false, false);
+        
+        // Default (4 Quadrants)
         else if (MODE === 'default') {
             const offset = HEX_RADIUS * 0.55;
-            const scale = 0.40; 
+            const scale = 0.40;
             
-            if (objs.mil.length > 0) 
-                drawIcon(objs.mil[0], iconLayerMilitary, 0, -offset, scale, true, true);
+            // Top: Military
+            if (objs.mil.length > 0) drawIcon(objs.mil[0], iconLayerMilitary, 0, -offset, scale, true, true);
             
-            if (objs.res.length > 0) 
-                drawIcon(objs.res[0], iconLayerRes, offset, 0, scale*1.4, false, false);
+            // Right: Resource
+            if (objs.res.length > 0) drawIcon(objs.res[0], iconLayerRes, offset, 0, scale*1.4, false, false);
             
-            if (objs.civ.length > 0) 
-                drawIcon(objs.civ[0], iconLayerCiv, 0, offset, scale, true, true);
+            // Bottom: Civilian
+            if (objs.civ.length > 0) drawIcon(objs.civ[0], iconLayerCiv, 0, offset, scale, true, true);
             
-            if (objs.misc.length > 0) 
-                drawIcon(objs.misc[0], iconLayerMisc, -offset, 0, scale*1.4, false, false);
+            // Left: Improvement (Farm/Mine/Camp)
+            if (objs.imp.length > 0) drawIcon(objs.imp[0], iconLayerImprovements, -offset, 0, scale*1.4, false, false);
         }
     });
 };
