@@ -651,25 +651,92 @@ function ReplayLogger.GetTurnSnapshot(iTurn)
                       cult = (city.GetJONSCulturePerTurn and city:GetJONSCulturePerTurn()) or 0,
                       faith = (city.GetFaithPerTurn and city:GetFaithPerTurn()) or 0
                   }
-                  local buildings = {}
+
+                  -- === СБОР ОБРАБОТКИ И БЛОКИРОВОК ===
+                  local worked = {}
+                  local locked = {} -- Новый массив для ID заблокированных тайлов
+
+                  for j = 0, city:GetNumCityPlots() - 1 do
+                      local plot = city:GetCityIndexPlot(j)
+                      if plot then
+                          local plotIdx = plot:GetPlotIndex()
+                          
+                          -- 1. Если тайл обрабатывается
+                          if city:IsWorkingPlot(plot) then
+                              table.insert(worked, plotIdx)
+                              
+                              -- 2. Если тайл ПРИНУДИТЕЛЬНО обрабатывается (Locked)
+                              if city:IsForcedWorkingPlot(plot) then
+                                  table.insert(locked, plotIdx)
+                              end
+                          end
+                      end
+                  end
+
+                  -- 1. СБОР ЗДАНИЙ И СПЕЦИАЛИСТОВ В НИХ
+                  local buildings = {} -- Просто список ID зданий (для иконок)
+                  local specSlots = {} -- Детализация: {buildingID, count}
+                  
                   for b in GameInfo.Buildings() do
                       if city:IsHasBuilding(b.ID) then
                           table.insert(buildings, b.ID)
+                          
+                          -- Проверяем, есть ли слоты и заняты ли они
+                          if city:GetNumSpecialistsAllowedByBuilding(b.ID) > 0 then
+                              local numInBuilding = city:GetNumSpecialistsInBuilding(b.ID)
+                              if numInBuilding > 0 then
+                                  table.insert(specSlots, {
+                                      b = b.ID,       -- ID здания
+                                      c = numInBuilding -- Сколько там сидит
+                                  })
+                              end
+                          end
                       end
                   end
 
-                  -- 1. СПЕЦИАЛИСТЫ
-                  local specialists = {}
-                  -- Проходим по всем зданиям/слотам, это сложно в Lua Civ5 без итератора.
-                  -- Проще получить общее количество специалистов по типам, если игра позволяет.
-                  -- В Civ5 API: city:GetSpecialistCount(SpecialistType)
+                  -- 2. БЕЗДЕЛЬНИКИ (Slackers)
+                  -- Обычно это Default Specialist (Citizen)
+                  local defaultSpecID = GameDefines.DEFAULT_SPECIALIST
+                  local slackers = city:GetSpecialistCount(defaultSpecID)
+
+                  -- 3. ПРОГРЕСС ВЕЛИКИХ ЛЮДЕЙ
+                  local gpProgress = {}
                   for spec in GameInfo.Specialists() do
-                      local count = city:GetSpecialistCount(spec.ID)
-                      if count > 0 then
-                          table.insert(specialists, { id = spec.ID, count = count })
+                      -- Нас интересуют только те, кто рождает GP (Great People)
+                      if spec.GreatPeopleUnitClass and spec.GreatPeopleUnitClass ~= "NULL" then
+                          local progress = city:GetSpecialistGreatPersonProgress(spec.ID)
+                          if progress > 0 then
+                              -- Находим порог (сколько надо накопить)
+                              local unitClass = GameInfo.UnitClasses[spec.GreatPeopleUnitClass]
+                              local threshold = 0
+                              if unitClass then
+                                  threshold = city:GetSpecialistUpgradeThreshold(unitClass.ID)
+                              end
+                              
+                              table.insert(gpProgress, {
+                                  s = spec.ID,      -- ID специалиста (Writer, Scientist...)
+                                  p = progress,     -- Текущий прогресс
+                                  t = threshold     -- Цель
+                              })
+                          end
                       end
                   end
 
+                  -- 4. ОБРАБОТКА ТАЙЛОВ (Твой код)
+                  local worked = {}
+                  local locked = {}
+                  for j = 0, city:GetNumCityPlots() - 1 do
+                      local plot = city:GetCityIndexPlot(j)
+                      if plot and city:IsWorkingPlot(plot) then
+                          local pIdx = plot:GetPlotIndex()
+                          table.insert(worked, pIdx)
+                          if city:IsForcedWorkingPlot(plot) then
+                              table.insert(locked, pIdx)
+                          end
+                      end
+                  end
+
+                  -- ЗАПИСЬ В ТАБЛИЦУ
                   table.insert(snapshot.cities, {
                       id = city:GetID(),
                       owner = i,
@@ -677,21 +744,19 @@ function ReplayLogger.GetTurnSnapshot(iTurn)
                       x = city:GetX(), y = city:GetY(),
                       pop = city:GetPopulation(),
                       hp = city:GetMaxHitPoints() - city:GetDamage(),
-                      buildings = buildings,
-                      yields = yields,
                       
-                      -- ПРОИЗВОДСТВО
-                      -- GetProductionNameKey работает для всех, но для AI может возвращать Generic данные.
-                      -- Убедись, что тестируешь с InGame контекстом.
+                      focus = city:GetFocusType(), -- ФОКУС
+                      
+                      buildings = buildings,
+                      specSlots = specSlots, -- <--- Новое: занятые слоты в зданиях
+                      slackers = slackers,   -- <--- Новое: безработные
+                      gpProgress = gpProgress, -- <--- Новое: прогресс GP
+                      
+                      yields = yields,
                       prodItem = city:GetProductionNameKey(), 
                       prodTurns = city:GetProductionTurnsLeft(),
-                      
                       worked = worked,
-                      
-                      -- ПРИОРИТЕТЫ (Focus)
-                      -- 0=Total, 1=Gold, 2=Prod, ... (см. GameInfo.CitySpecializations)
-                      focus = city:GetFocusType(),
-                      specialists = specialists -- Новое поле
+                      locked = locked
                   })
               end
           end

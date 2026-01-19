@@ -129,6 +129,14 @@
             <div class="stat-row">Население: <span style="color:white">{{ selectedCity.pop }}</span></div>
             <div class="stat-row">Здоровье: <span style="color:lime">{{ selectedCity.hp }}</span></div>
             
+            <!-- НОВОЕ: Отображение фокуса -->
+            <div class="stat-row">
+                🎯 Фокус: 
+                <span style="color: cyan; font-weight: bold;">
+                    {{ getFocusName(selectedCity.focus) }}
+                </span>
+            </div>
+
             <hr style="border-color: #444">
             
             <!-- YIELDS (Доходы) -->
@@ -142,7 +150,37 @@
             </div>
 
             <hr style="border-color: #444">
+            <hr style="border-color: #444">
 
+            <!-- СПЕЦИАЛИСТЫ -->
+            <div style="margin-bottom: 5px; color: #aaa;">Граждане:</div>
+            
+            <!-- Бездельники -->
+            <div v-if="selectedCity.slackers > 0" class="stat-row">
+                🔴 Безработные: <span style="font-weight:bold;">{{ selectedCity.slackers }}</span>
+            </div>
+
+            <!-- Занятые слоты -->
+            <div v-if="selectedCity.specSlots && selectedCity.specSlots.length > 0">
+                <div v-for="slot in selectedCity.specSlots" :key="slot.b" style="font-size: 0.9em; padding: 2px 0;">
+                    <!-- Имя здания + кол-во спецов -->
+                    🏛️ {{ getBuildingName(slot.b) }}: 
+                    <span style="color: yellow;">{{ slot.c }} 👤</span>
+                </div>
+            </div>
+
+            <!-- ПРОГРЕСС ВЕЛИКИХ ЛЮДЕЙ -->
+            <div v-if="selectedCity.gpProgress && selectedCity.gpProgress.length > 0" style="margin-top: 10px;">
+                <div style="color: #aaa; margin-bottom: 2px;">Великие люди:</div>
+                <div v-for="gp in selectedCity.gpProgress" :key="gp.s" style="font-size: 0.8em; margin-bottom: 4px;">
+                    <!-- Тут можно маппить ID спеца на имя, пока просто ID -->
+                    Spec {{ gp.s }}: 
+                    <div style="background: #444; height: 4px; width: 100%; margin-top: 2px;">
+                        <div :style="{width: (gp.p / gp.t * 100) + '%', background: 'cyan', height: '100%'}"></div>
+                    </div>
+                    <div style="text-align: right; color: #888;">{{ gp.p }} / {{ gp.t }}</div>
+                </div>
+            </div>
             <!-- ПРОИЗВОДСТВО -->
             <div style="text-align: center; margin-bottom: 10px; color: #aaa;">Производство:</div>
             <div style="text-align: center; font-size: 1.1em; color: orange;">
@@ -247,16 +285,23 @@
                 this.selectedCityId = cityId;
                 this.selectedCityOwner = ownerId;
                 
-                // Подсветка (если реализована)
+                // Подсветка
                 if (this.selectedCity && window.highlightWorkedPlots) {
                     const ownerColor = parseInt(this.getPlayerColor(this.selectedCity.owner).replace('#', ''), 16);
-                    window.highlightWorkedPlots(this.selectedCity.worked, ownerColor);
+                    
+                    // !!! ПЕРЕДАЕМ locked МАССИВ ВТОРЫМ АРГУМЕНТОМ
+                    // (используем || [] на случай, если поле пустое в старых записях)
+                    window.highlightWorkedPlots(
+                        this.selectedCity.worked || [], 
+                        this.selectedCity.locked || [], 
+                        ownerColor
+                    );
                 }
             },
             closeCity() {
                 this.selectedCityId = null;
                 this.selectedCityOwner = null;
-                if (window.highlightWorkedPlots) window.highlightWorkedPlots([]);
+                if (window.highlightWorkedPlots) window.highlightWorkedPlots([], [], 0);
             },
             getBuildingName(id) {
                 if (!this.replayData.header.dictionary.buildings) return id;
@@ -278,18 +323,21 @@
                 return `Civ ${playerId}`;
             },
             getFocusName(focusId) {
-                // ID соответствуют таблице CitySpecializations в БД Civ 5
+                // Маппинг на основе твоего исследования (CityAIFocusTypes Enum)
                 const modes = {
-                    0: "None", // NO_CITY_SPECIALIZATION
-                    1: "Food", // CITY_SPECIALIZATION_FOOD
-                    2: "Production", // CITY_SPECIALIZATION_PRODUCTION
-                    3: "Gold", // CITY_SPECIALIZATION_GOLD
-                    4: "Science", // CITY_SPECIALIZATION_SCIENCE
-                    5: "Culture", // CITY_SPECIALIZATION_CULTURE (иногда другие ID, проверь опытным путем)
-                    6: "Great People" 
+                    '-1': "Default",        // NO_FOCUS
+                    0: "Food 🍎",           // FOOD
+                    1: "Production ⚙️",     // PRODUCTION
+                    2: "Gold 💰",           // GOLD
+                    3: "Great People 🌟",   // GREAT_PEOPLE (сдвинулся сюда)
+                    4: "Science 🧪",        // SCIENCE
+                    5: "Culture 🎵",        // CULTURE
+                    8: "Faith 🕊️"           // FAITH
                 };
-                return modes[focusId] || "Default";
-            }
+                
+                // Проверка на случай неизвестных ID (6 или 7, если они вдруг появятся)
+                return modes[focusId] || `Unknown (${focusId})`;
+            },
         }
     }).mount('#app');
 </script>

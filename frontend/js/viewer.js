@@ -103,16 +103,21 @@ function getMapStateAtTurn(targetTurnIndex) {
 }
 
 // Функция подсветки обработки тайлов
-window.highlightWorkedPlots = function(plotIndices, colorInt) {
+// Обновленная функция подсветки с поддержкой Locked (Замочков)
+window.highlightWorkedPlots = function(workedIndices, lockedIndices, colorInt) {
     highlightLayer.removeChildren();
     
-    if (!plotIndices || plotIndices.length === 0) return;
+    if (!workedIndices || workedIndices.length === 0) return;
 
+    // 1. Рисуем подложку (хайлайт тайлов)
     const g = new PIXI.Graphics();
-    g.beginFill(colorInt, 0.4); // Полупрозрачная заливка
-    g.lineStyle(2, 0xffffff, 0.6); // Белая обводка
+    g.beginFill(colorInt, 0.45); // Чуть ярче
+    g.lineStyle(2, 0xffffff, 0.7);
 
-    plotIndices.forEach(idx => {
+    // Создаем Set для быстрого поиска залоченных
+    const lockedSet = new Set(lockedIndices || []);
+
+    workedIndices.forEach(idx => {
         const q = idx % staticMapData.width;
         const r = Math.floor(idx / staticMapData.width);
         const pos = getHexPosition(q, r);
@@ -125,12 +130,30 @@ window.highlightWorkedPlots = function(plotIndices, colorInt) {
             path.push(pos.y + HEX_RADIUS * Math.sin(angle));
         }
         g.drawPolygon(path);
-        
-        // Опционально: иконку человечка/головы (Citizen) в центре
-        // const head = getSpriteFromAsset('CITIZEN_ICON', 16, 16); ...
+
+        // 2. Если тайл в списке locked -> Рисуем иконку замка поверх
+        if (lockedSet.has(idx)) {
+            // Рисуем замочек программно (золотой цвет)
+            const lock = new PIXI.Graphics();
+            lock.x = pos.x; 
+            lock.y = pos.y;
+            
+            // Тело замка
+            lock.beginFill(0xFFD700); // Gold
+            lock.lineStyle(1, 0x000000);
+            lock.drawRect(-6, -4, 12, 10);
+            lock.endFill();
+            
+            // Дужка замка
+            lock.lineStyle(2, 0xFFD700);
+            lock.arc(0, -4, 4, Math.PI, 2*Math.PI); 
+            
+            highlightLayer.addChild(lock);
+        }
     });
+    
     g.endFill();
-    highlightLayer.addChild(g);
+    highlightLayer.addChildAt(g, 0); // Добавляем графику тайлов на дно слоя подсветки
 };
 
 // При снятии выделения (closeCity) вызываем window.highlightWorkedPlots([], 0)
@@ -346,6 +369,8 @@ window.updatePixiTurn = function(turnIndex) {
     iconLayerMilitary.removeChildren();
     citiesLayer.removeChildren();
 
+    highlightLayer.removeChildren(); 
+
     featuresLayer.removeChildren();
 
     const turn = turnsData[turnIndex];
@@ -552,6 +577,28 @@ window.updatePixiTurn = function(turnIndex) {
             if (objs.imp.length > 0) drawIcon(objs.imp[0], iconLayerImprovements, -offset, 0, scale*1.4, false, false);
         }
     });
+
+    // === ФИНАЛЬНЫЙ БЛОК: Восстановление выделения ===
+    // Если во Vue выбран город (сохранены ID), ищем его состояние в НОВОМ ходу
+    if (window.appVue && window.appVue.selectedCityId !== null) {
+        const selId = window.appVue.selectedCityId;
+        const selOwner = window.appVue.selectedCityOwner;
+
+        // Ищем город в массиве текущего хода
+        const cityData = turn.cities.find(c => c.id === selId && c.owner === selOwner);
+
+        // Если город найден (не разрушен) и у него есть данные обработки
+        if (cityData && cityData.worked) {
+            const ownerColor = parseInt(window.appVue.getPlayerColor(selOwner).replace('#', ''), 16);
+            
+            // Вызываем отрисовку для новых координат locked/worked
+            window.highlightWorkedPlots(
+                cityData.worked || [], 
+                cityData.locked || [], 
+                ownerColor
+            );
+        }
+    }
 };
 
 // --- АЛГОРИТМ ГРАНИЦ (EDGE DETECTION) ---
