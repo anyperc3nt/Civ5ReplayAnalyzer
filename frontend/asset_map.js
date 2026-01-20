@@ -1,10 +1,13 @@
 window.ASSET_MAP = {
+  "UI_CITY_ICON": "assets/UI/cityicon.png",
+  "UI_CAPITAL_STAR": "assets/UI/capitalstar.png",
   "YIELD_FOOD": "assets/UI/icon_food.png",
   "YIELD_PRODUCTION": "assets/UI/icon_production.png",
   "YIELD_GOLD": "assets/UI/icon_gold.png",
   "YIELD_SCIENCE": "assets/UI/icon_science.png",
   "YIELD_CULTURE": "assets/UI/icon_culture.png",
   "YIELD_FAITH": "assets/UI/icon_faith.png",
+
   "TERRAIN_HILL": "assets/sv_hills.png",
   "TERRAIN_MOUNTAIN": "assets/sv_mountains.png",
   "UNIT_AMERICAN_MINUTEMAN": "assets/sv_minuteman.png",

@@ -5,6 +5,8 @@
     <title>Civ5 Replay (PixiJS)</title>
     <!-- Vue 3 -->
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <!-- PixiJS 7 -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
     
@@ -21,46 +23,65 @@
         /* Панели */
         .top-bar {
             position: absolute; top: 0; left: 0; right: 0;
-            background: rgba(20, 20, 25, 0.9);
+            height: 50px; /* ФИКСИРОВАННАЯ ВЫСОТА */
+            background: rgba(20, 20, 25, 0.95);
             border-bottom: 1px solid #444;
-            padding: 10px 20px;
+            padding: 0 20px; /* Padding только по бокам */
             display: flex; justify-content: space-between; align-items: center;
+            box-sizing: border-box; /* Важно для расчета высоты */
+        }
+
+        /* Все модалки и боковые панели теперь отступают ровно на 50px */
+        .modal-layer, .side-panel {
+            position: absolute; top: 50px; bottom: 0;
         }
 
         .side-panel {
-            position: absolute; top: 60px; right: 0; bottom: 0; width: 280px;
+            right: 0; width: 280px;
             background: rgba(20, 20, 25, 0.9);
             border-left: 1px solid #444;
             display: flex; flex-direction: column;
             overflow-y: auto;
         }
 
+        .modal-layer {
+            left: 0; right: 0;
+            background: rgba(10,12,16, 0.96);
+            z-index: 50;
+            overflow: auto;
+            display: flex;
+            flex-direction: column;
+        }
+
         /* Элементы */
-        button { background: #444; border: 1px solid #666; color: white; padding: 5px 10px; cursor: pointer; border-radius: 3px; }
+        button { background: #444; border: 1px solid #666; color: white; padding: 4px 10px; cursor: pointer; border-radius: 3px; font-size: 13px; }
         button:hover { background: #555; }
+        button.active { background: #d44; border-color: #f66; } /* Активная кнопка */
+        
         input[type=range] { width: 300px; }
 
-        .stat-row { padding: 8px 12px; border-bottom: 1px solid #333; font-size: 13px; display: flex; justify-content: space-between; }
+        .stat-row { padding: 6px 12px; border-bottom: 1px solid #333; font-size: 13px; display: flex; justify-content: space-between; }
         .stat-row:hover { background: rgba(255,255,255,0.05); }
 
         /* Иконки Yields */
         .yield-icon {
-            width: 17px;
-            height: 17px;
-            display: inline-block;
-            vertical-align: middle;
-            background-size: contain;
-            background-repeat: no-repeat;
-            background-position: center;
-            margin-top: -2px; /* Компенсация базовой линии */
+            width: 17px; height: 17px;
+            display: inline-block; vertical-align: middle;
+            background-size: contain; background-repeat: no-repeat; background-position: center;
+            margin-top: -2px;
         }
-
         .icon-food { background-image: url('assets/UI/icon_food.png'); }
         .icon-prod { background-image: url('assets/UI/icon_production.png'); }
         .icon-gold { background-image: url('assets/UI/icon_gold.png'); }
         .icon-sci  { background-image: url('assets/UI/icon_science.png'); }
         .icon-cult { background-image: url('assets/UI/icon_culture.png'); }
         .icon-faith { background-image: url('assets/UI/icon_faith.png'); }
+
+        /* Scrollbars */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #222; }
+        ::-webkit-scrollbar-thumb { background: #555; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #777; }
     </style>
 </head>
 <body>
@@ -76,19 +97,21 @@
                 <b>Civ5 Replay</b> <span style="font-size: 0.8em; color: #888;">{{ currentTurnData?.timestamp ? new Date(currentTurnData.timestamp * 1000).toLocaleTimeString() : '' }}</span>
             </div>
 
-            <button @click="showTechTree = !showTechTree" :style="{background: showTechTree?'#4a4':''}">
+            <button @click="togglePanel('tech')" :class="{active: activePanel==='tech'}">
                 <span class="yield-icon icon-sci"></span> Tech
             </button>
-            <button @click="showCulture = !showCulture" :style="{background: showCulture?'#a4a':''}">
+            <button @click="togglePanel('culture')" :class="{active: activePanel==='culture'}">
                 <span class="yield-icon icon-cult"></span> Culture
             </button>
-            <button @click="showReligion = !showReligion" :style="{background: showReligion?'#ddda':''}">
+            <button @click="togglePanel('faith')" :class="{active: activePanel==='faith'}">
                 <span class="yield-icon icon-faith"></span> Faith
             </button>
-
-            <button @click="toggleBuildsHack" :style="{background: showBuilds?'#aa4':''}"> 
+            <button @click="togglePanel('builds')" :class="{active: activePanel==='builds'}">
                 <span class="yield-icon icon-prod"></span> Build
-            </button> <!-- костыльное открытие панели, зато работает -->
+            </button>
+            <button @click="togglePanel('charts')" :class="{active: activePanel==='charts'}">
+                📈 Charts
+            </button>
 
             <div style="display: flex; gap: 10px; align-items: center;">
                 <button @click="changeTurn(-1)">⏮</button>
@@ -110,62 +133,82 @@
                 <button @click="iconMode = 'resource'" :style="{background: iconMode==='resource'?'#66a':''}">💎</button>
                 <button @click="iconMode = 'misc'" :style="{background: iconMode==='misc'?'#66a':''}">🗿</button>
             </div>
+
+            <button @click="showPlayerList = !showPlayerList" :style="{background: showPlayerList?'#666':''}" title="Toggle Player List">
+                ☰
+            </button>
         </div>
 
-        <div class="side-panel interactive">
-            <div style="padding: 10px; background: #333; font-weight: bold; border-bottom: 1px solid #555;">
-                Игроки
+        <div class="side-panel interactive" v-if="showPlayerList">
+            
+            <!-- === MAJOR PLAYERS === -->
+            <div style="padding: 10px; background: #222; font-weight: bold; border-bottom: 1px solid #444; color: #ddd;">
+                Civilizations
             </div>
             
-            <!-- СПИСОК ИГРОКОВ -->
-            <div v-for="player in visiblePlayers" :key="player.id" class="stat-row">
-                <div style="display: flex; align-items: center; gap: 8px;">
-                    <!-- Цветной кружок -->
-                    <div :style="{
-                        width:'14px', height:'14px', 
-                        borderRadius:'50%', 
-                        background: getPlayerColor(player.id),
-                        border: '1px solid rgba(255,255,255,0.3)'
-                    }"></div>
-                    
-                    <!-- Имя + Статус -->
-                    <div style="display: flex; flex-direction: column;">
-                        <span style="font-weight: bold; font-size: 0.95em;">
-                            {{ getCivilizationName(player.id) }}
+            <div v-for="player in visiblePlayers" :key="player.id" style="border-bottom: 1px solid #333;">
+                
+                <!-- Строка Игрока (Кликабельна для раскрытия) -->
+                <div class="stat-row" @click="togglePlayerExpand(player.id)" style="cursor: pointer; background: rgba(255,255,255,0.02);">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <!-- Стрелочка -->
+                        <span style="font-size: 10px; color: #888; width: 10px;">
+                            {{ expandedPlayerIds.includes(player.id) ? '▼' : '▶' }}
                         </span>
-                        <span style="font-size: 0.75em; color: #aaa;" v-if="!player.isAlive">ELIMINATED</span>
+                        
+                        <!-- Цвет -->
+                        <div :style="{width:'12px', height:'12px', borderRadius:'50%', background: getPlayerColor(player.id)}"></div>
+                        
+                        <!-- Имя -->
+                        <div style="display: flex; flex-direction: column;">
+                            <span style="font-weight: bold; font-size: 0.95em;">{{ getCivilizationName(player.id) }}</span>
+                        </div>
+                    </div>
+
+                    <!-- Статы (Кратко) -->
+                    <div style="text-align: right; font-size: 0.8em; color: #aaa;">
+                        <span class="yield-icon icon-sci"></span> {{ player.science }}
+                        <span class="yield-icon icon-gold" style="margin-left:5px;"></span> {{ Math.floor(player.gold) }}
                     </div>
                 </div>
-                
-                <!-- Статы (в столбик или строку) -->
-                <div style="text-align: right; font-size: 0.85em; display: flex; flex-direction: column;">
-                    <span style="color: gold;">
-                        <span class="yield-icon icon-gold"></span> {{ Math.floor(player.gold) }} 
-                        <small>({{ player.goldPerTurn > 0 ? '+' : ''}}{{ player.goldPerTurn }})</small>
-                    </span>
-                    <span style="color: cyan;">
-                        <span class="yield-icon icon-sci"></span> {{ player.science }}
-                    </span>
-                    <span style="color: #d0f;">
-                        <span class="yield-icon icon-cult"></span> {{ Math.floor(player.totalCulture) }}
-                    </span>
+
+                <!-- Список городов игрока (Выпадающий) -->
+                <div v-if="expandedPlayerIds.includes(player.id)" style="background: rgba(0,0,0,0.3); box-shadow: inset 0 0 10px rgba(0,0,0,0.5);">
+                    <div v-for="city in (citiesByPlayer[player.id] || [])" :key="city.id" 
+                         @click.stop="jumpToCity(city)"
+                         style="padding: 6px 10px 6px 35px; border-bottom: 1px solid #2a2a2a; font-size: 0.9em; color: #ccc; cursor: pointer; display: flex; justify-content: space-between;">
+                        
+                        <span>
+                            <span v-if="city.isCapital" title="Capital">⭐</span>
+                            {{ city.name }}
+                        </span>
+                        <span style="color: #666; font-size: 0.9em;">{{ city.pop }}</span>
+                    </div>
+                    <div v-if="!(citiesByPlayer[player.id] || []).length" style="padding: 5px 35px; color: #666; font-size: 0.8em; font-style: italic;">
+                        Нет городов
+                    </div>
                 </div>
             </div>
 
-            <div style="padding: 10px; margin-top: 10px; background: #333; font-weight: bold;">Города</div>
-            <div v-for="city in currentCities" class="stat-row" @click="selectCity(city.id, city.owner)" style="cursor: pointer;">
-                <b>{{ city.name }}</b>
-                <span>Pop: {{ city.pop }}</span>
+            <!-- === CITY STATES === -->
+            <div style="padding: 10px; margin-top: 10px; background: #222; font-weight: bold; border-bottom: 1px solid #444; border-top: 1px solid #444; color: #ddd;">
+                City-States
             </div>
+            
+            <div v-for="cs in minorPlayers" :key="cs.id" class="stat-row" style="opacity: 0.8;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <div style="width:10px; height:10px; background: #444; border: 1px solid #888; border-radius: 50%;"></div>
+                    <span>{{ getCivilizationName(cs.id) }}</span>
+                </div>
+                <!-- Можно добавить статус (Friend/Ally) если будем тащить из Lua -->
+            </div>
+             <div v-if="minorPlayers.length === 0" style="padding: 10px; color: #666; font-style: italic;">
+                Нет известных ГГ
+            </div>
+
         </div>
         <!-- TECH TREE MODAL -->
-        <div v-if="showTechTree" class="interactive" style="
-        position: absolute; top: 60px; left: 0; right: 0; bottom: 0; 
-        background: rgba(10,12,16, 0.95); 
-        overflow: auto; /* Скролл */
-        z-index: 50;
-        ">
-        <div style="position: relative; width: 4000px; height: 1000px; padding: 50px;">
+        <div v-if="activePanel==='tech'" class="interactive modal-layer">
 
             <!-- ЛЕГЕНДА (Фиксированная плашка сверху или сбоку) -->
             <div style="position: fixed; bottom: 20px; left: 10px; z-index: 100; display: flex; gap: 10px; pointer-events: none;">
@@ -233,14 +276,8 @@
             </div>
 
         </div>
-        </div> 
         <!-- CULTURE MODAL -->
-        <div v-if="showCulture" class="interactive" style="
-        position: absolute; top: 60px; left: 0; right: 0; bottom: 0; 
-        background: rgba(15,10,20, 0.95); 
-        overflow: auto; z-index: 50; padding: 20px;
-        display: flex; gap: 20px;
-        ">
+        <div v-if="activePanel==='culture'" class="interactive modal-layer" style="padding: 20px; flex-direction: row; gap: 20px;">
             <div v-for="p in visiblePlayers.filter(x => !x.isMinor)" :key="p.id" style="min-width: 250px; background: rgba(255,255,255,0.05); padding: 15px; border-radius: 8px;">
                 <!-- Заголовок игрока -->
                 <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px; border-bottom: 2px solid #444; padding-bottom: 5px;">
@@ -264,12 +301,7 @@
             </div>
         </div>
         <!-- RELIGION MODAL -->
-        <div v-if="showReligion" class="interactive" style="
-        position: absolute; top: 60px; left: 0; right: 0; bottom: 0; 
-        background: rgba(20,20,15, 0.95); 
-        overflow: auto; z-index: 50; padding: 30px;
-        display: flex; flex-wrap: wrap; gap: 30px; justify-content: center;
-        ">
+        <div v-if="activePanel==='faith'" class="interactive modal-layer" style="padding: 30px; flex-direction: row; flex-wrap: wrap; gap: 30px; justify-content: center;">
         <div v-for="p in religiousPlayers" :key="p.id" style="
             width: 320px; 
             background: #222; 
@@ -326,114 +358,155 @@
         </div>
 
         <!-- BUILD ORDER MODAL -->
-        <!-- :key="buildPanelKey" — это наш спусковой крючок для обновления -->
-        <div v-if="showBuilds" :key="buildPanelKey" class="interactive" style="
-            position: absolute; top: 60px; left: 0; right: 0; bottom: 0; 
-            background: #1a1a1a; 
-            overflow: hidden; z-index: 50;
-            display: flex; flex-direction: column;
-        ">
-        <!-- Шапка с номерами ходов -->
-        <div style="height: 30px; background: #222; border-bottom: 1px solid #444; display: flex; overflow: hidden; padding-left: 200px; position: relative;" ref="timelineHeader">
-            <!-- Рисуем линейку через v-for (оптимизация: рисовать не каждый ход, а каждые 10) -->
-            <div v-for="i in Math.floor(maxTurns/10) + 1" :key="i" 
-                :style="{position: 'absolute', left: ((i-1)*10 * 30 + 200) + 'px', color: '#666', fontSize: '10px', top: '5px'}">
-                {{ (i-1)*10 }}
-            </div>
-        </div>
-
-        <!-- Основной скролл контент -->
-        <div style="flex: 1; overflow: auto; padding-top: 10px;" ref="timelineBody" @scroll="syncScroll">
-            
-            <div v-for="(pData, pId) in buildTimeline" :key="pId" style="margin-bottom: 20px;">
-                <!-- Игрок -->
-                <div style="padding: 5px 10px; background: #333; color: white; position: sticky; left: 0; z-index: 10; width: 100%; display:flex; align-items:center; gap:10px;">
-                    <div :style="{width:'10px', height:'10px', background: pData.color}"></div>
-                    {{ pData.name }}
-                </div>
-
-                <!-- Линии городов -->
-                <div v-for="(city, cId) in pData.cities" :key="cId" style="position: relative; height: 40px; border-bottom: 1px solid #2a2a2a;">
+        <div v-if="activePanel==='builds'" :key="buildPanelKey" class="interactive modal-layer">
                     
-                    <!-- Имя города (Липкое слева) -->
-                    <div style="
-                        position: sticky; left: 0; width: 180px; height: 100%; 
-                        background: #1a1a1a; border-right: 1px solid #444; 
-                        display: flex; align-items: center; padding-left: 20px; 
-                        font-size: 12px; color: #ccc; z-index: 5;
-                    ">
-                        {{ city.name }}
+            <!-- Верхняя панель (Header) -->
+            <div style="height: 35px; background: #222; border-bottom: 1px solid #444; overflow: hidden; position: relative; flex-shrink: 0;" ref="timelineHeader">
+                <div :style="{ width: timelineWidth + 'px', height: '100%', position: 'relative' }">
+                    <div style="position: sticky; left: 0; width: 200px; height: 100%; background: #222; border-right: 1px solid #444; z-index: 20; color: #888; display: flex; align-items: center; padding-left: 10px; font-size: 12px;">
+                        CITY / TURN
                     </div>
 
-                    <!-- Линия времени -->
-                    <div :style="{
-                        position: 'absolute', 
-                        left: (200 + city.startTurn * 30) + 'px', 
-                        right: 0, top: '50%', height: '2px', background: '#333'
-                    }"></div>
-
-                    <!-- События (Точки на таймлайне) -->
-                    <div v-for="(ev, idx) in city.events" :key="idx" 
-                    @mouseenter="showTooltip($event, ev.name + ' (Turn ' + ev.turn + ')')"
-                    @mousemove="moveTooltip($event)"
-                    @mouseleave="hideTooltip()"
-                    :style="{
-                    position: 'absolute',
-                    left: (200 + ev.turn * 30) + 'px',
-                    top: '5px',
-                    width: '30px', height: '30px',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    cursor: 'help',
-                    zIndex: ev.type === 'FOUND' ? 20 : 10 
-                    }">
-
-                    <!-- МАРКЕР ОСНОВАНИЯ -->
-                    <div v-if="ev.type === 'FOUND'" style="
-                        width: 12px; height: 12px; background: #fff; transform: rotate(45deg); 
-                        border: 2px solid #000; box-shadow: 0 0 4px white;
-                    "></div>
-
-                    <!-- ЮНИТ (Круг) -->
-                    <div v-else-if="ev.type === 'U'" :style="{
-                        width: '14px', height: '14px', borderRadius: '50%', 
-                        background: pData.color, border: '1px solid #ccc',
-                        boxShadow: '0 1px 2px black'
-                    }"></div>
-
-                    <!-- ЗДАНИЕ (Квадрат) -->
-                    <div v-else :style="{
-                        width: '12px', height: '12px', borderRadius: '2px',
-                        background: '#444', border: '1px solid ' + pData.color,
-                        boxShadow: '0 1px 2px black'
-                    }"></div>
-
-                    <!-- Подпись снизу (Сокращенная) -->
-                    <div style="
-                        position: absolute; top: 22px; font-size: 9px; color: #aaa; 
-                        white-space: nowrap; pointer-events:none; 
-                        text-shadow: 1px 1px 0 #000;
-                        max-width: 60px; overflow: hidden; text-overflow: ellipsis;
-                    ">
-                    {{ ev.type === 'FOUND' ? 'Founded' : ev.name }}
+                    <!-- Линейка (шаг 42px) -->
+                    <div v-for="i in Math.floor(maxTurns/10) + 1" :key="i" 
+                        :style="{
+                            position: 'absolute', 
+                            left: ((i-1)*10 * 42 + 200) + 'px', 
+                            color: '#888', fontSize: '11px', top: '8px', fontWeight: 'bold', 
+                            borderLeft: '1px solid #444', height: '20px', paddingLeft: '4px'
+                        }">
+                        {{ (i-1)*10 }}
                     </div>
-                    </div>
+                </div>
+            </div>
 
+            <!-- Основное тело (Body) -->
+            <div style="flex: 1; overflow: auto;" ref="timelineBody" @scroll="syncScroll">
+                <div :style="{ width: timelineWidth + 'px', position: 'relative' }">
+                    
+                    <div v-for="(pData, pId) in buildTimeline" :key="pId" style="margin-bottom: 10px;">
+                        <!-- Игрок -->
+                        <div style="
+                            position: sticky; left: 0; z-index: 15;
+                            padding: 6px 10px; background: #333; color: white; 
+                            border-bottom: 1px solid #444; border-top: 1px solid #444;
+                            display:flex; align-items:center; gap:10px; width: 100%; box-sizing: border-box;
+                        ">
+                            <div :style="{width:'10px', height:'10px', background: pData.color}"></div>
+                            <b>{{ pData.name }}</b>
+                        </div>
+
+                        <!-- Города -->
+                        <div v-for="(city, cId) in pData.cities" :key="cId" style="position: relative; height: 45px; border-bottom: 1px solid #2a2a2a; background: #1a1a1a;">
+                            
+                            <!-- Имя города -->
+                            <div style="
+                                position: sticky; left: 0; width: 200px; height: 100%; 
+                                background: #1e1e1e; border-right: 1px solid #444; 
+                                display: flex; align-items: center; padding-left: 20px; 
+                                font-size: 12px; color: #ccc; z-index: 5;
+                                box-shadow: 2px 0 5px rgba(0,0,0,0.3);
+                            ">
+                                {{ city.name }}
+                            </div>
+
+                            <!-- Линия жизни (startTurn * 42) -->
+                            <div :style="{
+                                position: 'absolute', 
+                                left: (200 + city.startTurn * 42) + 'px', 
+                                right: 0, top: '50%', height: '2px', background: '#333'
+                            }"></div>
+
+                            <!-- События (turn * 42) -->
+                            <div v-for="(ev, idx) in city.events" :key="idx" 
+                                @mouseenter="showTooltip($event, ev.name + ' (Turn ' + ev.turn + ')')"
+                                @mousemove="moveTooltip($event)"
+                                @mouseleave="hideTooltip()"
+                                :style="{
+                                    position: 'absolute',
+                                    left: (200 + ev.turn * 42) + 'px',
+                                    top: '5px',
+                                    width: '40px', height: '35px', /* Увеличили зону клика */
+                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                    cursor: 'help',
+                                    zIndex: ev.type === 'FOUND' ? 20 : 10 
+                                }">
+
+                                <div v-if="ev.type === 'FOUND'" style="width: 10px; height: 10px; background: #fff; transform: rotate(45deg); border: 2px solid #000;"></div>
+                                <div v-else-if="ev.type === 'U'" :style="{width: '12px', height: '12px', borderRadius: '50%', background: pData.color, border: '1px solid #aaa'}"></div>
+                                <div v-else :style="{width: '10px', height: '10px', borderRadius: '2px', background: '#555', border: '1px solid ' + pData.color}"></div>
+
+                                <!-- Подпись: max-width 80px -->
+                                <div style="
+                                    position: absolute; top: 26px; 
+                                    font-size: 10px; color: #888; 
+                                    white-space: nowrap; pointer-events:none; 
+                                    max-width: 80px; overflow: hidden; text-overflow: ellipsis; 
+                                    text-align: center;
+                                ">
+                                    {{ ev.type === 'FOUND' ? '' : ev.name }}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
-    </div>
 
-    <!-- CUSTOM TOOLTIP -->
-    <div v-if="tooltip.show" style="
-        position: fixed; 
-        left: 0; top: 0; 
-        transform: translate(0, 0); /* Используем style binding для координат */
-        background: rgba(0,0,0,0.9); border: 1px solid #777; 
-        color: white; padding: 5px 8px; border-radius: 4px; font-size: 12px; pointer-events: none; z-index: 1000;
-        white-space: nowrap;
-    " :style="{ left: tooltip.x + 'px', top: tooltip.y + 'px' }">
-        {{ tooltip.text }}
-    </div>
+        <!-- CUSTOM TOOLTIP -->
+        <div v-if="tooltip.show" style="
+            position: fixed; 
+            left: 0; top: 0; 
+            transform: translate(0, 0); /* Используем style binding для координат */
+            background: rgba(0,0,0,0.9); border: 1px solid #777; 
+            color: white; padding: 5px 8px; border-radius: 4px; font-size: 12px; pointer-events: none; z-index: 1000;
+            white-space: nowrap;
+        " :style="{ left: tooltip.x + 'px', top: tooltip.y + 'px' }">
+            {{ tooltip.text }}
+        </div>
+
+        <!-- CHARTS MODAL -->
+        <div v-if="activePanel==='charts'" class="interactive modal-layer" style="padding: 20px;">
+        <!-- Controls -->
+        <div style="display: flex; gap: 15px; margin-bottom: 20px; justify-content: center;">
+            <select v-model="currentChartMetric" @change="updateChart" style="
+                padding: 8px; font-size: 16px; background: #333; color: white; border: 1px solid #555; border-radius: 4px;
+            ">
+            <optgroup label="General">
+                <option value="score">Score</option>
+                <option value="totalPop">Population</option>
+                <option value="happiness">Happiness</option>
+                <option value="goldenAgeTurns">Golden Age (Turns)</option>
+            </optgroup>
+
+            <optgroup label="Economy">
+                <option value="gold">Total Gold</option>
+                <option value="goldPerTurn">Gold Per Turn</option>
+                <option value="totalFood">Crop Yield (Food)</option>
+                <option value="totalProd">Manufacturing (Prod)</option>
+            </optgroup>
+
+            <optgroup label="Science & Culture">
+                <option value="techCount">Technologies Researched</option>
+                <option value="science">Science (Raw)</option>
+                <option value="effectiveScience">Science (Effective)</option>
+                <option value="totalCulture">Total Culture</option>
+                <option value="culture">Culture (Raw)</option>
+                <option value="effectiveCulture">Culture (Effective)</option>
+                <option value="faith">Total Faith</option>
+            </optgroup>
+
+            <optgroup label="Military">
+                <option value="military">Military Might</option>
+            </optgroup>
+            </select>
+        </div>
+
+        <!-- Chart Container -->
+        <div style="flex: 1; position: relative; width: 100%; max-width: 1200px; margin: 0 auto;">
+            <canvas id="replayChart"></canvas>
+        </div>
+        </div>
 
     </div>
     
@@ -543,26 +616,24 @@
                 currentTurn: 0,
                 maxTurns: 0,
                 replayData: null,
-                selectedCityId: null, // Храним ID, а не объект!
-                selectedCityOwner: null, // Добавляем поле владельца
+                selectedCityId: null,
+                selectedCityOwner: null,
                 
-                // Режимы иконок: 'default', 'military', 'resource', 'civilian', 'misc'
                 iconMode: 'default',
-
-                showTechTree: false, // Открыто ли окно
-                showCulture: false,
-                showReligion: false,
-                showBuilds: false,
                 showYields: true,
+                showPlayerList: true, // Это оставим отдельным флагом, так как это HUD, а не модалка
+                
+                // ВМЕСТО КУЧИ ФЛАГОВ:
+                activePanel: null, // 'tech', 'culture', 'faith', 'builds', 'charts' или null
+
                 buildPanelKey: 0, 
+                currentChartMetric: 'score',
+                chartInstance: null,
 
-                techTreeScale: 1,    // Зум дерева (если захотим)
-
+                expandedPlayerIds: [],
+                
                 tooltip: { show: false, x: 0, y: 0, text: '' },
-                
                 playerColors: [0xda2020, 0x3366cc, 0xffcc00, 0x00aa00, 0xcc6600, 0x990099, 0x009999, 0xffffff]
-
-                
             }
         },
         computed: {
@@ -571,11 +642,33 @@
 
                 // ОТФИЛЬТРОВАННЫЙ СПИСОК для отображения в панели
             visiblePlayers() {
-                // 1. Проверяем, что массив есть
                 if (!this.currentPlayers) return [];
-                // 2. Фильтруем: Игрок существует И это не Варвар
-                return this.currentPlayers.filter(p => p && !p.isBarbarian);
+                // Фильтруем: Игрок существует И не Варвар И не ГГ
+                return this.currentPlayers.filter(p => p && !p.isBarbarian && !p.isMinor);
             },
+
+            // Список Городов-Государств (Minor Civs)
+            minorPlayers() {
+                if (!this.currentPlayers) return [];
+                return this.currentPlayers.filter(p => p && p.isMinor);
+            },
+
+            // Группировка городов по владельцу для удобства рендера
+            // Возвращает объект: { ownerId: [city1, city2], ... }
+            citiesByPlayer() {
+                const groups = {};
+                this.currentCities.forEach(c => {
+                    if (!groups[c.owner]) groups[c.owner] = [];
+                    groups[c.owner].push(c);
+                });
+                return groups;
+            },
+
+            // Ширина контента таймлайна (чтобы скролл работал корректно)
+            timelineWidth() {
+                // 200px (имена) + кол-во ходов * 42px + запас
+                return 200 + (this.maxTurns * 42) + 100;
+            },        
             
             selectedCity() {
                 if (this.selectedCityId === null || !this.currentTurnData) return null;
@@ -583,6 +676,10 @@
                     c.id === this.selectedCityId && 
                     c.owner === this.selectedCityOwner
                 );
+            },
+            currentCities() {
+                // Возвращаем список городов текущего хода или пустой массив
+                return this.currentTurnData?.cities || [];
             },
             techTreeNodes() {
                 if (!this.replayData) return [];
@@ -843,6 +940,20 @@
                 this.selectedCityOwner = null;
                 if (window.highlightWorkedPlots) window.highlightWorkedPlots([], [], 0);
             },
+            togglePlayerExpand(pId) {
+                const idx = this.expandedPlayerIds.indexOf(pId);
+                if (idx === -1) this.expandedPlayerIds.push(pId);
+                else this.expandedPlayerIds.splice(idx, 1);
+            },
+
+            jumpToCity(city) {
+                // 1. Выделяем
+                this.selectCity(city.id, city.owner);
+                // 2. Двигаем камеру (вызываем глобальную функцию из viewer.js)
+                if (window.moveCameraTo) {
+                    window.moveCameraTo(city.x, city.y);
+                }
+            },            
             getBuildingName(id) {
                 if (!this.replayData || !this.replayData.header.dictionary.buildings) return id;
                 const def = this.replayData.header.dictionary.buildings[id];
@@ -894,21 +1005,179 @@
             hideTooltip() {
                 this.tooltip.show = false;
             },
-            toggleBuildsHack() {
-                // 1. Просто переключаем флаг (наивное открытие)
-                this.showBuilds = !this.showBuilds;
-
-                // 2. Если мы открываем панель, ждем микро-паузу и заставляем Vue перерисовать её
-                if (this.showBuilds) {
-                    setTimeout(() => {
-                        this.buildPanelKey++; // Изменение ключа форсирует перерисовку div-а
-                        console.log("Hack: Force Repaint Triggered");
-                        
-                        // Если и это не поможет, можно раскомментировать строку ниже.
-                        // Она перерисует Pixi (безопасно, не меняя ход), что заставит браузер обновить слой.
-                        // window.updatePixiTurn(this.currentTurn); 
-                    }, 50); // 50мс достаточно, чтобы глаз не заметил, но браузер отработал
+            togglePanel(name) {
+                // 1. Если кликнули по уже открытой панели - закрываем её
+                if (this.activePanel === name) {
+                    this.activePanel = null;
+                    return; 
                 }
+
+                // 2. Открываем выбранную панель
+                this.activePanel = name;
+                
+                // === СПЕЦИФИЧНАЯ ЛОГИКА ===
+
+                // Для ГРАФИКОВ: ждем отрисовку DOM, потом инициализируем Chart.js
+                if (name === 'charts') {
+                    this.$nextTick(() => {
+                        this.updateChart();
+                    });
+                }
+
+                // Для BUILDS: Тот самый ХАК
+                // Мы сохраняем логику: меняем ключ через 50мс после открытия.
+                // Это заставляет Vue перерисовать внутренности панели, корректно пересчитав скроллы.
+                if (name === 'builds') {
+                    setTimeout(() => {
+                        this.buildPanelKey++; 
+                    }, 50);
+                }
+            },
+            toggleCharts() {
+                this.showCharts = !this.showCharts;
+                if (this.showCharts) {
+                    // Ждем пока Vue отрисует DOM (canvas), затем рисуем график
+                    this.$nextTick(() => {
+                        this.updateChart();
+                    });
+                }
+            },
+            
+            updateChart() {
+                if (!this.replayData) return;
+                const ctx = document.getElementById('replayChart');
+                if (!ctx) return;
+                if (this.chartInstance) this.chartInstance.destroy();
+
+                const datasets = [];
+                const turnsLabels = [];
+                const playerMap = {};
+                
+                // Вспомогательные данные для накопления (Golden Age)
+                // Map: playerId -> cumulativeCounter
+                const gaCounters = {}; 
+
+                // 1. Инициализация
+                const firstTurnPlayers = this.replayData.turns[0]?.players || [];
+                firstTurnPlayers.forEach(p => {
+                    if (!p.isMinor && !p.isBarbarian) {
+                        playerMap[p.id] = {
+                            label: this.getCivilizationName(p.id),
+                            data: [],
+                            borderColor: this.getPlayerColor(p.id),
+                            backgroundColor: this.getPlayerColor(p.id),
+                            borderWidth: 2,
+                            pointRadius: 0,
+                            pointHoverRadius: 5,
+                            fill: false,
+                            tension: 0.1
+                        };
+                        gaCounters[p.id] = 0;
+                    }
+                });
+
+                // Словарь политик для проверки Representation
+                // Ищем ID политики POLICY_REPRESENTATION (или аналог)
+                // В ванильной Civ5 BNW это "POLICY_REPRESENTATION"
+                let representationPolicyId = null;
+                if (this.replayData.header.dictionary.policies) {
+                    const dict = this.replayData.header.dictionary.policies;
+                    const found = Object.keys(dict).find(k => dict[k].type === 'POLICY_REPRESENTATION');
+                    if (found) representationPolicyId = parseInt(found);
+                }
+
+                // 2. Проход по ходам
+                this.replayData.turns.forEach((turn, idx) => {
+                    turnsLabels.push(turn.turn);
+
+                    Object.keys(playerMap).forEach(pId => {
+                        const id = parseInt(pId);
+                        const pData = turn.players ? turn.players.find(p => p.id === id) : null;
+                        
+                        let val = null; // По умолчанию null (разрыв линии)
+
+                        if (pData && pData.isAlive) {
+                            const m = this.currentChartMetric;
+                            
+                            // === ПРОСТЫЕ МЕТРИКИ ===
+                            if (m === 'score') val = pData.score;
+                            else if (m === 'gold') val = pData.gold;
+                            else if (m === 'goldPerTurn') val = pData.goldPerTurn;
+                            else if (m === 'science') val = pData.science;
+                            else if (m === 'totalCulture') val = pData.totalCulture;
+                            else if (m === 'culture') val = pData.culture;
+                            else if (m === 'faith') val = pData.faith;
+                            else if (m === 'military') val = pData.military;
+                            
+                            // === НОВЫЕ СУММАРНЫЕ ===
+                            else if (m === 'totalPop') val = pData.totalPop || 0;
+                            else if (m === 'totalFood') val = pData.totalFood || 0;
+                            else if (m === 'totalProd') val = pData.totalProd || 0;
+                            else if (m === 'happiness') val = pData.happiness || 0;
+                            
+                            // === TECH COUNT ===
+                            else if (m === 'techCount') {
+                                val = pData.tech && pData.tech.researched ? pData.tech.researched.length : 0;
+                            }
+
+                            // === GOLDEN AGE (Накопительный) ===
+                            else if (m === 'goldenAgeTurns') {
+                                // Если в этом ходу активен GA, плюсуем счетчик
+                                if (pData.isGoldenAge) {
+                                    gaCounters[id]++;
+                                }
+                                val = gaCounters[id];
+                            }
+
+                            // === EFFECTIVE SCIENCE ===
+                            else if (m === 'effectiveScience') {
+                                // Формула: Science / (1 + (NumCities - 1) * 0.05)
+                                // Исключаем столицу (поэтому -1), но не меньше 0
+                                const numCitiesPen = Math.max(0, (pData.numCities || 1) - 1);
+                                const penalty = 1 + (numCitiesPen * 0.05);
+                                val = pData.science / penalty;
+                            }
+
+                            // === EFFECTIVE CULTURE ===
+                            else if (m === 'effectiveCulture') {
+                                // Базовый штраф 10% за город.
+                                // С политикой Representation: -33% от штрафа (т.е. ~6.7%)
+                                let perCityMod = 0.10;
+                                
+                                // Проверяем политику
+                                if (representationPolicyId && pData.policies && pData.policies.includes(representationPolicyId)) {
+                                    perCityMod = 0.067; 
+                                }
+
+                                const numCitiesPen = Math.max(0, (pData.numCities || 1) - 1);
+                                const penalty = 1 + (numCitiesPen * perCityMod);
+                                val = pData.culture / penalty;
+                            }
+                        }
+
+                        playerMap[id].data.push(val);
+                    });
+                });
+
+                Object.values(playerMap).forEach(ds => datasets.push(ds));
+
+                this.chartInstance = new Chart(ctx, {
+                    type: 'line',
+                    data: { labels: turnsLabels, datasets: datasets },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: { mode: 'index', intersect: false },
+                        plugins: {
+                            legend: { labels: { color: '#ccc' } },
+                            tooltip: { mode: 'index', intersect: false }
+                        },
+                        scales: {
+                            x: { ticks: { color: '#888' }, grid: { color: '#333' } },
+                            y: { beginAtZero: true, ticks: { color: '#888' }, grid: { color: '#333' } }
+                        }
+                    }
+                });
             },
         }
     }).mount('#app');

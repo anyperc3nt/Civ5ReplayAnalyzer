@@ -171,10 +171,19 @@ window.initPixiApp = function(data) {
 
     const container = document.getElementById('pixi-container');
 
+    // === ИСПРАВЛЕНИЕ: ОЧИСТКА СТАРОГО ПРИЛОЖЕНИЯ ===
+    if (app) {
+        // Уничтожаем старый app, очищаем сцену, но ОСТАВЛЯЕМ текстуры в памяти (texture: false)
+        // чтобы не перегружать их каждый раз и не получать черные квадраты
+        app.destroy(true, { children: true, texture: false, baseTexture: false });
+        app = null;
+    }
+    // ================================================
+
     // Инициализируем состояние копией статики
     currentMapState = JSON.parse(JSON.stringify(staticMapData.tiles));
     
-    // Удаляем старый канвас если был (для HMR)
+    // Удаляем старый канвас если был (на случай, если destroy не удалил canvas из DOM)
     if (container.firstChild) container.removeChild(container.firstChild);
 
     app = new PIXI.Application({
@@ -222,11 +231,40 @@ window.initPixiApp = function(data) {
     mapContainer.addChild(iconLayerMilitary);
     mapContainer.addChild(yieldsLayer);
 
-    // Центрируем камеру
-    const centerX = (staticMapData.width * HEX_WIDTH) / 2;
-    const centerY = (staticMapData.height * HEX_RADIUS * 1.5) / 2;
-    mapContainer.x = (app.screen.width / 2) - centerX;
-    mapContainer.y = (app.screen.height / 2) - centerY;
+// --- НАСТРОЙКА КАМЕРЫ ---
+    // 2. Начальный зум (чуть крупнее)
+    const startScale = 1.3; // Было 0.6, сделали поближе
+    mapContainer.scale.set(startScale);
+
+    setupInteraction();
+    drawStaticTerrain();
+    
+    // Сначала рисуем 0-й ход, чтобы появились объекты
+    window.updatePixiTurn(0);
+
+    // 3. Умная центровка: Ищем столицу первого игрока
+    // (Делаем это после updatePixiTurn, чтобы данные городов были доступны во Vue, если нужно,
+    // но здесь мы берем напрямую из turnsData[0])
+    const turn0 = turnsData[0];
+    let startX = staticMapData.width / 2;
+    let startY = staticMapData.height / 2;
+    
+    // Ищем первого живого мажорного игрока и его город
+    if (turn0 && turn0.cities) {
+        // Пытаемся найти игрока 0 (обычно человек)
+        let firstCity = turn0.cities.find(c => c.owner === 0);
+        // Если нет, берем первый попавшийся город
+        if (!firstCity && turn0.cities.length > 0) firstCity = turn0.cities[0];
+
+        if (firstCity) {
+            startX = firstCity.x;
+            startY = firstCity.y;
+            console.log(`Centering on city: ${firstCity.name} (${startX}, ${startY})`);
+        }
+    }
+
+    // Применяем центровку
+    window.moveCameraTo(startX, startY);
 
     setupInteraction();
     drawStaticTerrain();
@@ -329,7 +367,7 @@ function drawStaticTerrain() {
         if (tile.f >= 0) {
             const fDef = globalReplayData.header.dictionary.features[tile.f];
             const fName = fDef ? fDef.type : null;
-            const fSprite = getSpriteFromAsset(fName, HEX_WIDTH, HEX_HEIGHT);
+            const fSprite = getSpriteFromAsset(fName, HEX_WIDTH*1.05, HEX_HEIGHT*1.05);
             if (fSprite) {
                 fSprite.x = pos.x; fSprite.y = pos.y;
                 featuresLayer.addChild(fSprite);
@@ -423,45 +461,110 @@ window.updatePixiTurn = function(turnIndex) {
     // === 2. ГОРОДА ===
     turn.cities.forEach(city => {
         const pos = getHexPosition(city.x, city.y);
-        const color = getPlayerColorInt(city.owner);
+        const playerColor = getPlayerColorInt(city.owner);
         
         const g = new PIXI.Container();
         g.x = pos.x; g.y = pos.y;
 
-        // Фон названия (полупрозрачный)
+        // --- 1. ИКОНКА ГОРОДА (Вместо квадрата) ---
+        // Рисуем под городами, поэтому добавляем первой
+        const cityIcon = getSpriteFromAsset("UI_CITY_ICON", 57, 57); // Размер можно подгонять
+        if (cityIcon) {
+            // cityIcon.tint = playerColor; // Подкрашиваем иконку в цвет игрока
+            cityIcon.y = 0; // Чуть опускаем, чтобы сидела на тайле
+            g.addChild(cityIcon);
+            
+            // Интерактив на иконку
+            cityIcon.eventMode = 'static';
+            cityIcon.cursor = 'pointer';
+            cityIcon.on('pointerdown', () => {
+                if (window.appVue) window.appVue.selectCity(city.id, city.owner);
+            });
+        }
+
+        // --- 2. ТАБЛИЧКА С ИМЕНЕМ (Nameplate) ---
+        // Контейнер для таблички (висит над городом)
+        const nameplate = new PIXI.Container();
+        nameplate.y = -35; // Высота над городом
+
+        // Хак для четкости: Шрифт огромный, scale маленький
+        const FONT_SCALE_FACTOR = 0.4;
+        const BASE_FONT_SIZE = 32; // Рисуем крупно (было 14)
+
+        // Стиль текста (размеры увеличены)
+        const nameStyle = { fontFamily: 'Segoe UI', fontSize: BASE_FONT_SIZE, fill: 0xffffff, fontWeight: 'bold' };
+        const popStyle = { fontFamily: 'Segoe UI', fontSize: BASE_FONT_SIZE, fill: 0x00ff00, fontWeight: 'bold', stroke: 0x000000, strokeThickness: 4 };
+
+        // Текстовые объекты
+        const txtName = new PIXI.Text(city.name, nameStyle);
+        const txtPop = new PIXI.Text(String(city.pop), popStyle); 
+        
+        // Сразу применяем scale, чтобы вернуть к нормальному визуальному размеру
+        txtName.scale.set(FONT_SCALE_FACTOR);
+        txtPop.scale.set(FONT_SCALE_FACTOR);
+        
+        // Звездочка столицы
+        let starSprite = null;
+        if (city.isCapital) {
+            starSprite = getSpriteFromAsset("UI_CAPITAL_STAR", 22, 22);
+        }
+
+        // --- РАСЧЕТ РАЗМЕРОВ И ПОЗИЦИЙ ---
+        const paddingX = 6;
+        const paddingY = 2;
+        const elementGap = 0;
+        
+        let contentWidth = txtPop.width + elementGap + txtName.width;
+        if (starSprite) contentWidth += starSprite.width + elementGap;
+
+        const bgW = contentWidth + paddingX * 2;
+        const bgH = Math.max(txtName.height, txtPop.height) + paddingY * 2;
+
+        // Фон (Цвет цивилизации)
         const bg = new PIXI.Graphics();
-        bg.beginFill(0x000000, 0.6);
-        bg.drawRoundedRect(-40, -32, 80, 18, 4); 
+        bg.beginFill(playerColor, 0.85); // 0.85 - небольшая прозрачность
+        bg.lineStyle(1, 0x000000, 0.5); // Тонкая обводка
+        bg.drawRoundedRect(-bgW / 2, -bgH / 2, bgW, bgH, 4);
         bg.endFill();
         
-        // High-DPI Текст
-        // Создаем текст в 2x размере и сжимаем, чтобы было четко
-        const nameText = new PIXI.Text(city.name, {
-            fontFamily: 'Segoe UI', fontSize: 24, fill: color,
-            fontWeight: 'bold', stroke: 0x000000, strokeThickness: 4,
-            lineJoin: 'round'
-        });
-        nameText.resolution = 2; // Важно для четкости
-        nameText.scale.set(0.5); // Возвращаем размер
-        nameText.anchor.set(0.5, 1);
-        nameText.position.set(0, -16); // Над гексом
+        // Добавляем фон
+        nameplate.addChild(bg);
 
-        // Квадратик города
-        const box = new PIXI.Graphics();
-        box.beginFill(0x222222);
-        box.lineStyle(2, color);
-        box.drawRect(-10, -10, 20, 20);
-        
-        // Интерактив (Клик по городу)
-        box.eventMode = 'static';
-        box.cursor = 'pointer';
-        box.on('pointerdown', () => {
-            if (window.appVue) window.appVue.selectCity(city.id, city.owner); // Передаем ID!
+        // Позиционируем элементы (центрируем всё хозяйство)
+        let cursorX = -contentWidth / 2;
+
+        // 1. Популяция (Слева)
+        txtPop.anchor.set(0, 0.5);
+        txtPop.x = cursorX; 
+        txtPop.y = 0;
+        nameplate.addChild(txtPop);
+        cursorX += txtPop.width + elementGap;
+
+        // 2. Звезда (Если есть)
+        if (starSprite) {
+            starSprite.anchor.set(0, 0.5);
+            starSprite.x = cursorX;
+            starSprite.y = 0; // Чуть поправить если криво
+            nameplate.addChild(starSprite);
+            cursorX += starSprite.width + elementGap;
+        }
+
+        // 3. Имя города
+        txtName.anchor.set(0, 0.5);
+        txtName.x = cursorX;
+        txtName.y = 0;
+        nameplate.addChild(txtName);
+
+        // Добавляем табличку в группу города
+        g.addChild(nameplate);
+
+        // Интерактив и на табличку тоже
+        bg.eventMode = 'static';
+        bg.cursor = 'pointer';
+        bg.on('pointerdown', () => {
+            if (window.appVue) window.appVue.selectCity(city.id, city.owner);
         });
 
-        g.addChild(bg);
-        g.addChild(nameText);
-        g.addChild(box);
         citiesLayer.addChild(g);
     });
 

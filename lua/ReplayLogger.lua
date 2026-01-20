@@ -691,47 +691,45 @@ function ReplayLogger.GetTurnSnapshot(iTurn)
                   policies = nil
               }
               
-              -- Статистику собираем ТОЛЬКО для Мажоров (не ГГ, не Варвары)
+              -- Статистику собираем ТОЛЬКО для Мажоров
               if not isMinor and not isBarbarian then
-                  pData.goldPerTurn = p:CalculateGoldRate()
-                  pData.science = p:GetScience()
-                  pData.culture = (p.GetTotalJONSCulturePerTurn and p:GetTotalJONSCulturePerTurn()) or 0
-                  pData.totalCulture = p:GetJONSCulture()
-                  pData.happiness = p:GetExcessHappiness()
-                  pData.faith = p:GetFaith()
-                  pData.tourism = (p.GetTourism and p:GetTourism()) or 0
-                  
-                  -- Военная мощь (варвары её имеют, но считаем только для игроков пока)
-                  pData.military = p:GetMilitaryMight()
+                pData.goldPerTurn = p:CalculateGoldRate()
+                pData.science = p:GetScience()
+                pData.culture = (p.GetTotalJONSCulturePerTurn and p:GetTotalJONSCulturePerTurn()) or 0
+                pData.totalCulture = p:GetJONSCulture()
+                pData.happiness = p:GetExcessHappiness()
+                pData.faith = p:GetFaith()
+                pData.tourism = (p.GetTourism and p:GetTourism()) or 0
+                pData.military = p:GetMilitaryMight()
+                pData.numCities = p:GetNumCities() -- <--- Кол-во городов для штрафов
+                
+                -- Золотой век (флаг)
+                pData.isGoldenAge = p:IsGoldenAge() 
 
-                  -- ТЕХНОЛОГИИ
-                  local pTeam = Teams[p:GetTeam()]
-                  pData.tech = { current = -1, progress = 0, researched = {} }
-                  
-                  local currentTech = p:GetCurrentResearch()
-                  if currentTech ~= -1 then
-                      pData.tech.current = currentTech
-                      pData.tech.progress = p:GetResearchProgress(currentTech)
-                  end
-                  
-                  -- Оптимизация: слать только ID изученных
-                  -- (В идеале слать только дельту, но пока шлем полный список)
-                  local researched = {}
-                  for tech in GameInfo.Technologies() do
-                      if pTeam:IsHasTech(tech.ID) then
-                          table.insert(researched, tech.ID)
-                      end
-                  end
-                  pData.tech.researched = researched
+                -- ТЕХНОЛОГИИ (оставляем как было)
+                local pTeam = Teams[p:GetTeam()]
+                pData.tech = { current = -1, progress = 0, researched = {} }
+                local currentTech = p:GetCurrentResearch()
+                if currentTech ~= -1 then
+                    pData.tech.current = currentTech
+                    pData.tech.progress = p:GetResearchProgress(currentTech)
+                end
+                local researched = {}
+                for tech in GameInfo.Technologies() do
+                    if pTeam:IsHasTech(tech.ID) then
+                        table.insert(researched, tech.ID)
+                    end
+                end
+                pData.tech.researched = researched
 
-                  -- ПОЛИТИКИ
-                  local policies = {}
-                  for policy in GameInfo.Policies() do
-                      if p:HasPolicy(policy.ID) then
-                          table.insert(policies, policy.ID)
-                      end
-                  end
-                  pData.policies = policies
+                -- ПОЛИТИКИ (оставляем как было)
+                local policies = {}
+                for policy in GameInfo.Policies() do
+                    if p:HasPolicy(policy.ID) then
+                        table.insert(policies, policy.ID)
+                    end
+                end
+                pData.policies = policies
                   
                   -- РЕЛИГИЯ И ПАНТЕОНЫ
                   local eReligion = p:GetReligionCreatedByPlayer()
@@ -769,20 +767,28 @@ function ReplayLogger.GetTurnSnapshot(iTurn)
               
               -- ЮНИТЫ (Варвары имеют юнитов!)
               for unit in p:Units() do
-                  table.insert(snapshot.units, {
-                      id = unit:GetID(),
-                      owner = i,
-                      type = unit:GetUnitType(),
-                      x = unit:GetX(), y = unit:GetY(),
-                      hp = unit:GetCurrHitPoints(),
-                      moves = unit:GetMoves()
-                      -- promotion? level?
-                  })
+                table.insert(snapshot.units, {
+                  id = unit:GetID(),
+                  owner = i,
+                  type = unit:GetUnitType(),
+                  x = unit:GetX(), y = unit:GetY(),
+                  hp = unit:GetCurrHitPoints(),
+                  moves = unit:GetMoves()
+                  -- promotion? level?
+                })
               end
+              
+              -- СЧЕТЧИКИ ДЛЯ ГРАФИКОВ
+              local totalPop = 0
+              local totalFood = 0
+              local totalProd = 0
 
               -- ГОРОДА (Варвары могут захватывать города, хотя редко)
               for city in p:Cities() do
-                  -- Код сбора городов такой же
+                  -- Суммируем
+                  totalPop = totalPop + city:GetPopulation()
+                  totalFood = totalFood + city:GetYieldRate(YieldTypes.YIELD_FOOD)
+                  totalProd = totalProd + city:GetYieldRate(YieldTypes.YIELD_PRODUCTION)
                   local yields = {
                       food = city:GetYieldRate(YieldTypes.YIELD_FOOD),
                       prod = city:GetYieldRate(YieldTypes.YIELD_PRODUCTION),
@@ -882,10 +888,12 @@ function ReplayLogger.GetTurnSnapshot(iTurn)
                       owner = i,
                       name = city:GetName(),
                       x = city:GetX(), y = city:GetY(),
+                      isCapital = city:IsCapital(), -- <--- ДОБАВИТЬ ЭТУ СТРОКУ
                       pop = city:GetPopulation(),
                       hp = city:GetMaxHitPoints() - city:GetDamage(),
                       
                       focus = city:GetFocusType(), -- ФОКУС
+                      
                       
                       buildings = buildings,
                       specSlots = specSlots, -- <--- Новое: занятые слоты в зданиях
@@ -898,6 +906,13 @@ function ReplayLogger.GetTurnSnapshot(iTurn)
                       worked = worked,
                       locked = locked
                   })
+              end
+
+              -- ЗАПИСЫВАЕМ СУММЫ В ИГРОКА (Если это не варвар)
+              if not isBarbarian then
+                pData.totalPop = totalPop
+                pData.totalFood = totalFood
+                pData.totalProd = totalProd
               end
           end
       end
