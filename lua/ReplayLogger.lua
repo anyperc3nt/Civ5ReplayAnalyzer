@@ -364,13 +364,20 @@ function ReplayLogger.InitMapCache()
     local numPlots = Map.GetNumPlots()
     for i = 0, numPlots - 1 do
         local plot = Map.GetPlotByIndex(i)
+        
+        -- Сбор текущих доходов (0-5: Food, Prod, Gold, Sci, Cult, Faith)
+        local yields = {}
+        for yType = 0, 5 do
+            table.insert(yields, plot:GetYield(yType))
+        end
+
         ReplayLogger.MapCache[i] = {
             f = plot:GetFeatureType(),
             i = plot:GetImprovementType(),
             r = plot:GetResourceType(),
-            -- Route (Дорога) тоже полезна
             rt = plot:GetRouteType(),
-            p = plot:IsImprovementPillaged() -- Разграблено ли?
+            p = plot:IsImprovementPillaged(),
+            y = yields -- Новый массив доходов
         }
     end
 end
@@ -600,30 +607,58 @@ function ReplayLogger.GetTurnSnapshot(iTurn)
 
   ReplayLogger.TurnEvents = {} 
 
-    -- 1. СКАНИРОВАНИЕ КАРТЫ (оставил без изменений, код был верный)
-    local numPlots = Map.GetNumPlots()
-    for i = 0, numPlots - 1 do
-        local plot = Map.GetPlotByIndex(i)
-        snapshot.territory[i + 1] = plot:GetOwner()
+  -- 1. СКАНИРОВАНИЕ КАРТЫ
+  local numPlots = Map.GetNumPlots()
+  for i = 0, numPlots - 1 do
+      local plot = Map.GetPlotByIndex(i)
+      snapshot.territory[i + 1] = plot:GetOwner()
+      
+      local cache = ReplayLogger.MapCache[i]
+      
+      -- Считываем текущее состояние
+      local currentF = plot:GetFeatureType()
+      local currentI = plot:GetImprovementType()
+      local currentR = plot:GetResourceType()
+      local currentRt = plot:GetRouteType()
+      local currentP = plot:IsImprovementPillaged()
+      
+      -- Считываем доходы
+      local currentY = {}
+      local yieldsChanged = false
+      for yType = 0, 5 do
+          local val = plot:GetYield(yType)
+          table.insert(currentY, val)
+          -- Сравниваем с кэшем (cache.y может быть nil при первом запуске старых версий, но InitMapCache это решает)
+          if cache.y and cache.y[yType + 1] ~= val then
+              yieldsChanged = true
+          end
+      end
+      
+      -- Если хоть что-то изменилось
+      if yieldsChanged or 
+        cache.f ~= currentF or cache.i ~= currentI or 
+        cache.r ~= currentR or cache.rt ~= currentRt or cache.p ~= currentP then
         
-        local cache = ReplayLogger.MapCache[i]
-        local currentF = plot:GetFeatureType()
-        local currentI = plot:GetImprovementType()
-        local currentR = plot:GetResourceType()
-        local currentRt = plot:GetRouteType()
-        local currentP = plot:IsImprovementPillaged()
-        
-        if not cache or cache.f ~= currentF or cache.i ~= currentI or 
-           cache.r ~= currentR or cache.rt ~= currentRt or cache.p ~= currentP then
-           
-            table.insert(snapshot.mapChanges, {
-                id = i, f = currentF, i = currentI, r = currentR, rt = currentRt, p = currentP
-            })
-            ReplayLogger.MapCache[i] = {
-                f = currentF, i = currentI, r = currentR, rt = currentRt, p = currentP
-            }
-        end
-    end
+          -- Формируем объект изменений
+          local changeObj = {
+              id = i, 
+              f = currentF, i = currentI, r = currentR, rt = currentRt, p = currentP
+          }
+          
+          -- Добавляем yields только если они изменились (экономия места)
+          if yieldsChanged then
+              changeObj.y = currentY
+          end
+
+          table.insert(snapshot.mapChanges, changeObj)
+          
+          -- Обновляем кэш
+          ReplayLogger.MapCache[i] = {
+              f = currentF, i = currentI, r = currentR, rt = currentRt, p = currentP,
+              y = currentY
+          }
+      end
+  end
 
     -- 2. СКАНИРОВАНИЕ ИГРОКОВ (Исправлено для Варваров)
     -- В Civ 5 ID игроков идут от 0 до 63 (MAX_CIV_PLAYERS обычно 64)

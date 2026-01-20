@@ -15,6 +15,7 @@ let baseTerrainLayer, territoryLayer, gridLayer, featuresLayer, hillsLayer;
 let citiesLayer;
 let highlightLayer;
 let iconLayerRes, iconLayerCiv, iconLayerImprovements, iconLayerMilitary; // Слои иконок
+let yieldsLayer;
 
 let staticMapData = null;
 let turnsData = null;
@@ -88,6 +89,7 @@ function getMapStateAtTurn(targetTurnIndex) {
                     if (change.f !== undefined) s.f = change.f;
                     if (change.i !== undefined) s.i = change.i;
                     if (change.r !== undefined) s.r = change.r;
+                    if (change.y !== undefined) s.y = change.y;
                 }
             });
         }
@@ -190,8 +192,8 @@ window.initPixiApp = function(data) {
 
     // === СОЗДАЕМ СЛОИ (ПОРЯДОК ВАЖЕН!) ===
     baseTerrainLayer = new PIXI.Container();    // 1. Земля
-    territoryLayer = new PIXI.Container();      // 2. Границы (Линии)
     gridLayer = new PIXI.Container();           // 3. Сетка
+    territoryLayer = new PIXI.Container();      // 2. Границы (Линии)
     improvementsLayer = new PIXI.Container(); // Фермы, Шахты
     featuresLayer = new PIXI.Container();       // 4. Леса/Джунгли
     highlightLayer = new PIXI.Container(); //обработка тайлов жителями
@@ -203,11 +205,12 @@ window.initPixiApp = function(data) {
     iconLayerCiv = new PIXI.Container();
     iconLayerImprovements = new PIXI.Container();
     iconLayerMilitary = new PIXI.Container();
+    yieldsLayer = new PIXI.Container();
 
     // Добавляем в контейнер
     mapContainer.addChild(baseTerrainLayer);
-    mapContainer.addChild(territoryLayer);
     mapContainer.addChild(gridLayer);
+    mapContainer.addChild(territoryLayer);
     mapContainer.addChild(featuresLayer);
     mapContainer.addChild(hillsLayer);
     mapContainer.addChild(highlightLayer); //обработка тайлов жителями
@@ -217,6 +220,7 @@ window.initPixiApp = function(data) {
     mapContainer.addChild(iconLayerCiv);
     mapContainer.addChild(iconLayerImprovements);
     mapContainer.addChild(iconLayerMilitary);
+    mapContainer.addChild(yieldsLayer);
 
     // Центрируем камеру
     const centerX = (staticMapData.width * HEX_WIDTH) / 2;
@@ -379,11 +383,17 @@ window.updatePixiTurn = function(turnIndex) {
 
     featuresLayer.removeChildren();
 
+    yieldsLayer.removeChildren();
+
     const turn = turnsData[turnIndex];
     if (!turn) return;
 
     // Получаем актуальное состояние тайлов (ландшафт, ресурсы, улучшения) через умный кэш
     const tileState = getMapStateAtTurn(turnIndex);
+
+    if (window.appVue && window.appVue.showYields) {
+        drawYieldsGlobal(tileState);
+    }
 
     // === 2. ОТРИСОВКА ФИЧ (ЛЕСА) ===
     // Теперь мы рисуем их каждый ход заново, так как лес могут вырубить
@@ -602,6 +612,132 @@ window.updatePixiTurn = function(turnIndex) {
         }
     }
 };
+
+
+// === ОТРИСОВКА YIELDS ===
+
+function drawYieldsGlobal(tileState) {
+    // Список типов в порядке отображения: Food, Prod, Gold, Sci, Cult, Faith
+    // Соответствует индексам Civ5 YieldTypes: 0, 1, 2, 4, 5, 8 ?? Нет, в Lua мы сохраняли 0-5 подряд.
+    // Lua: 0=Food, 1=Prod, 2=Gold, 3=Science, 4=Culture, 5=Faith (мы мапили итератором 0-5)
+    const YIELD_ASSETS = [
+        "YIELD_FOOD", "YIELD_PRODUCTION", "YIELD_GOLD", 
+        "YIELD_SCIENCE", "YIELD_CULTURE", "YIELD_FAITH"
+    ];
+
+    Object.keys(tileState).forEach(idxStr => {
+        const idx = parseInt(idxStr);
+        const state = tileState[idx];
+        
+        if (!state.y) return; // Нет данных о доходах
+
+        // Фильтруем нулевые значения
+        const activeYields = [];
+        state.y.forEach((val, typeIdx) => {
+            if (val > 0) {
+                activeYields.push({ typeIdx: typeIdx, val: val });
+            }
+        });
+
+        if (activeYields.length === 0) return;
+
+        const q = idx % staticMapData.width;
+        const r = Math.floor(idx / staticMapData.width);
+        const pos = getHexPosition(q, r);
+
+        // Контейнер для всех иконок клетки
+        const cellCont = new PIXI.Container();
+        cellCont.x = pos.x; 
+        cellCont.y = pos.y;
+
+        // Параметры верстки
+        const ICON_SIZE = 7; // Размер маленькой иконки
+        const GAP = 4;        // Отступ между группами
+        let currentX = 0;
+
+        // 1. Сначала считаем общую ширину, чтобы отцентровать
+        let totalWidth = 0;
+        const groups = activeYields.map(item => {
+            let width = 0;
+            // Логика ширины группы
+            if (item.val < 5) {
+                // 1 -> 1 иконка
+                // 2 -> 1 иконка (вертикально, ширина та же)
+                // 3 -> треугольник (чуть шире, ~1.5 ширины)
+                // 4 -> квадрат ( ~1.5 ширины)
+                if (item.val <= 2) width = ICON_SIZE;
+                else width = ICON_SIZE * 1.6;
+            } else {
+                // 5+ -> Большая иконка
+                width = ICON_SIZE * 2;
+            }
+            totalWidth += width;
+            return { ...item, width: width };
+        });
+
+        totalWidth += (groups.length - 1) * GAP;
+
+        // Начальная точка X (сдвигаем влево на половину ширины)
+        currentX = -totalWidth / 2;
+
+        // 2. Рисуем группы
+        groups.forEach(group => {
+            const assetName = YIELD_ASSETS[group.typeIdx];
+            
+            // Центр группы по X
+            const groupCenterX = currentX + group.width / 2;
+            
+            if (group.val >= 5) {
+                // === ВАРИАНТ 5+: Большая иконка + Цифра ===
+                const sprite = getSpriteFromAsset(assetName, ICON_SIZE * 1.8, ICON_SIZE * 1.8);
+                if (sprite) {
+                    sprite.x = groupCenterX;
+                    sprite.y = -2; // Чуть выше центра
+                    cellCont.addChild(sprite);
+
+                    const text = new PIXI.Text(group.val, {
+                        fontFamily: 'Arial', fontSize: 10, fill: 0xffffff, 
+                        stroke: 0x000000, strokeThickness: 3, fontWeight: 'bold'
+                    });
+                    text.anchor.set(0.5, 0);
+                    text.y = 4; 
+                    text.x = groupCenterX;
+                    cellCont.addChild(text);
+                }
+            } else {
+                // === ВАРИАНТЫ 1-4 ===
+                // Координаты относительно groupCenterX и 0
+                const offsets = [];
+                const s = ICON_SIZE; 
+                
+                if (group.val === 1) {
+                    offsets.push({x:0, y:0});
+                } else if (group.val === 2) {
+                    offsets.push({x:0, y:-s*0.45}, {x:0, y:s*0.45});
+                } else if (group.val === 3) {
+                    // Треугольник
+                    offsets.push({x:0, y:-s*0.4}, {x:-s*0.35, y:s*0.3}, {x:s*0.35, y:s*0.3});
+                } else if (group.val === 4) {
+                    // Ромб/Квадрат
+                    offsets.push({x:0, y:-s*0.5}, {x:-s*0.45, y:0}, {x:s*0.45, y:0}, {x:0, y:s*0.5});
+                }
+
+                offsets.forEach(off => {
+                    const sprite = getSpriteFromAsset(assetName, s, s);
+                    if (sprite) {
+                        sprite.x = groupCenterX + off.x;
+                        sprite.y = off.y;
+                        cellCont.addChild(sprite);
+                    }
+                });
+            }
+
+            currentX += group.width + GAP;
+        });
+
+        yieldsLayer.addChild(cellCont);
+    });
+}
 
 // --- АЛГОРИТМ ГРАНИЦ (EDGE DETECTION) ---
 
