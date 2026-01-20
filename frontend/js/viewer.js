@@ -192,9 +192,9 @@ window.initPixiApp = function(data) {
     baseTerrainLayer = new PIXI.Container();    // 1. Земля
     territoryLayer = new PIXI.Container();      // 2. Границы (Линии)
     gridLayer = new PIXI.Container();           // 3. Сетка
-    highlightLayer = new PIXI.Container(); //обработка тайлов жителями
     improvementsLayer = new PIXI.Container(); // Фермы, Шахты
     featuresLayer = new PIXI.Container();       // 4. Леса/Джунгли
+    highlightLayer = new PIXI.Container(); //обработка тайлов жителями
     hillsLayer = new PIXI.Container();          // 4. Холмы и Горы (Поверх лесов)
     citiesLayer = new PIXI.Container();         // 5. Города (подложка)
     
@@ -208,9 +208,9 @@ window.initPixiApp = function(data) {
     mapContainer.addChild(baseTerrainLayer);
     mapContainer.addChild(territoryLayer);
     mapContainer.addChild(gridLayer);
-    mapContainer.addChild(highlightLayer); //обработка тайлов жителями
     mapContainer.addChild(featuresLayer);
     mapContainer.addChild(hillsLayer);
+    mapContainer.addChild(highlightLayer); //обработка тайлов жителями
     mapContainer.addChild(citiesLayer);
     
     mapContainer.addChild(iconLayerRes);

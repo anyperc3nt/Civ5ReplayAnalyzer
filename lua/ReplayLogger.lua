@@ -536,6 +536,51 @@ function ReplayLogger.SendGameHeader()
     collectgarbage("collect")
 end
 
+
+-- Буфер событий за текущий ход
+ReplayLogger.TurnEvents = {}
+
+-- Хук: Построено здание или Чудо
+function ReplayLogger.OnCityConstructed(ownerId, cityId, buildingType, bGold, bFaithOrCulture)
+    table.insert(ReplayLogger.TurnEvents, {
+        type = "B", -- Building
+        p = ownerId,
+        c = cityId,
+        id = buildingType
+    })
+end
+
+-- Хук: Построен юнит
+function ReplayLogger.OnCityTrained(ownerId, cityId, unitId, bGold, bFaithOrCulture)
+  local player = Players[ownerId]
+  local savedId = unitId -- По умолчанию (на всякий случай)
+  
+  if player then
+      -- Получаем объект юнита по его Instance ID
+      local unit = player:GetUnitByID(unitId)
+      if unit then
+          -- Берем ID ТИПА юнита (тот, что совпадает со словарем)
+          savedId = unit:GetUnitType()
+      end
+  end
+
+  table.insert(ReplayLogger.TurnEvents, {
+      type = "U", -- Unit
+      p = ownerId,
+      c = cityId,
+      id = savedId
+  })
+end
+
+-- Хук: Завершен проект (например, Манхэттен)
+function ReplayLogger.OnCityCompletedProject(ownerId, cityId, projectId)
+     -- Проекты можно тоже добавить, если нужно, пока пропустим для краткости
+end
+
+-- РЕГИСТРАЦИЯ ХУКОВ (Добавь это в конец файла, где остальные Events.Add)
+GameEvents.CityConstructed.Add(ReplayLogger.OnCityConstructed)
+GameEvents.CityTrained.Add(ReplayLogger.OnCityTrained)
+
 -- === СБОР ДАННЫХ ЗА ХОД (SNAPSHOT) ===
 
 function ReplayLogger.GetTurnSnapshot(iTurn)
@@ -547,8 +592,13 @@ function ReplayLogger.GetTurnSnapshot(iTurn)
       cities = {},
       units = {},
       territory = {},
-      mapChanges = {}
+      mapChanges = {},
+      
+      -- !!! ДОБАВЛЯЕМ СОБЫТИЯ !!!
+      events = ReplayLogger.TurnEvents 
   }
+
+  ReplayLogger.TurnEvents = {} 
 
     -- 1. СКАНИРОВАНИЕ КАРТЫ (оставил без изменений, код был верный)
     local numPlots = Map.GetNumPlots()
