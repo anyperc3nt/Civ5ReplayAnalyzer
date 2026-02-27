@@ -65,15 +65,26 @@
     *   `export.py`: Компилирует разрозненные сессии в единый `data.js` для фронтенда.
 3.  **Viewer (Frontend):** SPA на **Vue 3** + **PixiJS**. Рендерит гексагональную сетку и интерфейс.
 
-```meramid
-graph TD
-    A[Civ5 Game Engine] -->|Hook| B(ReplayLogger.lua)
-    B -->|Chunks| C[Lua.log File]
-    C -->|Tail| D[watcher.py]
-    D -->|JSONL| E[replays/session.jsonl]
-    E -->|Merge| F[export.py]
-    F -->|JS Object| G[data.js]
-    G -->|run Webserver| H[Web Viewer Vue + PixiJS]
+```mermaid
+graph LR
+    subgraph Game ["Civ5 Engine"]
+        A[API Hook] --> B(Logger.lua)
+    end
+    
+    subgraph IO ["File System"]
+        B -->|Chunks| C[Lua.log]
+        C -->|Tail| D[watcher.py]
+        D -->|JSONL| E[session.jsonl]
+    end
+
+    subgraph Build ["Processing"]
+        E -->|Merge| F[export.py]
+        F -->|JS Object| G[data.js]
+    end
+
+    subgraph Frontend ["Viewer"]
+        G --> H[Vue + PixiJS]
+    end
 ```
 
 ---
